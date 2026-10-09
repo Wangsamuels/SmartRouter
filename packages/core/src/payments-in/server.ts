@@ -84,6 +84,8 @@ export function createSessionServer(cfg: Config, db: Db) {
         getClient: () => client,
         store,
         unitType: 'request',
+        // Fees for server-sent txs (user close, sponsored open/top-up) in the payment token.
+        feeToken: cfg.tokens.payment,
         suggestedDeposit: String(cfg.pricing.defaultAllocationUsd),
         ...(cfg.mpp.sponsorFees ? { feePayer: true as const } : {}),
         // No automatic settlement: the worker settles idle channels in batches (fewer txs).

@@ -53,6 +53,8 @@ export async function settleChannel(sessions: SessionServer, db: Db, token: stri
   if (v !== s.spent) return { skipped: 'voucher includes refunded requests; collect on close' }
   const txHash = await tempo.settle(sessions.store, sessions.client, channelId as Hex, {
     account: sessions.operator,
+    // Pay the fee in the channel's stablecoin: the operator may hold nothing else (mainnet: USDC.e only).
+    feeToken: s.token,
     onSessionSettlement: (e) => recordSettlement(db, token, { channelId: e.channelId, txHash: e.txHash, kind: 'settle', totalSettled: e.amount, delta: e.delta }),
   })
   return { txHash }
@@ -85,6 +87,7 @@ export async function closeChannel(sessions: SessionServer, db: Db, token: strin
 
   const txHash = await Chain.closeOnChain(sessions.client, s.descriptor as never, v, capture, s.highestVoucher.signature, s.escrowContract, {
     account: sessions.operator,
+    feeToken: s.token,
     candidateFeeTokens: [s.token],
   })
   const receipt = await Chain.waitForSuccessfulReceipt(sessions.client, txHash)
