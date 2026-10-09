@@ -10,3 +10,8 @@ _tmp_*
 .cloudflare
 scripts/out/
 !.env.example
+.secrets
+.hot-wallet
+.smoke-bundle.tgz
+.smoke-run*.mjs
+.smoke-results.jsonl

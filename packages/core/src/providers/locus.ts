@@ -42,7 +42,16 @@ export function locusAdapter(payer: Payer): ProviderAdapter {
       const { response, payment } = await payer.paidPost(url(model), body(model, asText(task)), ctx)
       const json = await readJson(response, payment.paidMicro)
       const out = textFromChoices(json)
-      if (!out?.text) throw new ProviderError(`no text in response: ${JSON.stringify(json).slice(0, 200)}`, 'bad_response', response.status, payment.paidMicro)
+      if (!out?.text) {
+        const msg = (json?.data ?? json)?.choices?.[0]?.message
+        const reasoned = Boolean(msg?.reasoning || msg?.reasoning_content)
+        throw new ProviderError(
+          reasoned ? 'model used its whole reply budget on reasoning (raise maxOutputTokens)' : `no text in response: ${JSON.stringify(json).slice(0, 200)}`,
+          'bad_response',
+          response.status,
+          payment.paidMicro,
+        )
+      }
 
       // Perplexity returns sources; keep them so the UI can show them under the answer.
       const raw = pick(json, 'citations', 'data.citations', 'search_results', 'data.search_results')

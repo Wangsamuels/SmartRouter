@@ -13,7 +13,10 @@ function body(model: ModelRef, task: TextTask, stream: boolean) {
   return {
     model: model.modelName,
     messages: task.messages,
-    max_tokens: task.maxOutputTokens,
+    // OpenAI's newer models reject max_tokens and require max_completion_tokens.
+    ...(model.provider === 'openai' ? { max_completion_tokens: task.maxOutputTokens } : { max_tokens: task.maxOutputTokens }),
+    // Thinking models can spend the whole reply budget on reasoning; keep it short (OpenRouter's unified param).
+    ...(model.provider === 'openrouter' ? { reasoning: { effort: 'low' } } : {}),
     stream,
     ...(stream ? { stream_options: { include_usage: true } } : {}),
   }
@@ -41,12 +44,15 @@ export function openaiStyleAdapter(payer: Payer): ProviderAdapter {
 
       if (response.ok && type.includes('text/event-stream') && response.body) {
         let text = ''
+        let reasoningChars = 0
         let tokensIn: number | undefined
         let tokensOut: number | undefined
         try {
           for await (const data of sseData(response.body, ctx.signal)) {
             const chunk = JSON.parse(data)
-            const delta: string = chunk.choices?.[0]?.delta?.content ?? ''
+            const d = chunk.choices?.[0]?.delta
+            reasoningChars += String(d?.reasoning ?? d?.reasoning_content ?? '').length
+            const delta: string = d?.content ?? ''
             if (delta) {
               text += delta
               ctx.onText?.(delta)
@@ -60,7 +66,13 @@ export function openaiStyleAdapter(payer: Payer): ProviderAdapter {
           if (e instanceof ProviderError) throw new ProviderError(e.message, e.kind, e.status, payment.paidMicro)
           throw new ProviderError(`stream error: ${(e as Error).message}`, 'bad_response', 200, payment.paidMicro)
         }
-        if (!text) throw new ProviderError('empty stream', 'bad_response', 200, payment.paidMicro)
+        if (!text)
+          throw new ProviderError(
+            reasoningChars ? 'model used its whole reply budget on reasoning (raise maxOutputTokens)' : 'empty stream',
+            'bad_response',
+            200,
+            payment.paidMicro,
+          )
         return { kind: 'text', text, tokensIn, tokensOut, payment }
       }
 

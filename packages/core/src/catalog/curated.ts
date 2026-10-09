@@ -5,7 +5,8 @@
  *
  * `verified: false` = not yet confirmed by a paid smoke-test call (gateways return a 402
  * even for unknown model ids, so a model name can only be proven by paying). Unverified
- * entries are stored inactive.
+ * entries are stored inactive. Every entry below passed the paid smoke test on Oct 9, 2026
+ * (scripts/smoke-providers.ts); add new models as verified: false until they do.
  */
 import type { AdapterName, TaskType } from '../providers/types.js'
 
@@ -62,7 +63,7 @@ const locus = (provider: string, modelName: string, label: string, extra: Partia
   label,
   taskTypes: TEXT,
   speed: 'medium',
-  verified: false,
+  verified: true, // every Locus model below passed the paid smoke test (Oct 9)
   ...extra,
 })
 
@@ -90,10 +91,10 @@ export const CURATED: CuratedModel[] = [
   openrouter('google/gemma-4-31b-it', 'Gemma 4 31B', { text: 'gemma-4-31b' }, 'fast'),
 
   // ---- Direct Tempo gateways (session-capable). Ids proven by the paid smoke test. ----
-  { id: 'openai:gpt-6-luna', provider: 'openai', adapter: 'openaiStyle', baseUrl: 'https://openai.mpp.tempo.xyz', modelName: 'gpt-6-luna', label: 'GPT-6 Luna (OpenAI)', taskTypes: TEXT, arena: { text: 'gpt-6-luna-max' }, speed: 'fast', verified: false },
-  { id: 'openai:gpt-5.6-sol', provider: 'openai', adapter: 'openaiStyle', baseUrl: 'https://openai.mpp.tempo.xyz', modelName: 'gpt-5.6-sol', label: 'GPT-5.6 Sol (OpenAI)', taskTypes: TEXT, arena: { text: 'gpt-5.6-sol-xhigh' }, speed: 'medium', verified: false },
-  { id: 'anthropic:claude-sonnet-5.5', provider: 'anthropic', adapter: 'openaiStyle', baseUrl: 'https://anthropic.mpp.tempo.xyz', modelName: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5 (Anthropic)', taskTypes: TEXT, arena: { text: 'claude-sonnet-5.5-xhigh' }, speed: 'medium', verified: false },
-  { id: 'anthropic:claude-haiku-4-5', provider: 'anthropic', adapter: 'openaiStyle', baseUrl: 'https://anthropic.mpp.tempo.xyz', modelName: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Anthropic)', taskTypes: TEXT, arena: { text: 'claude-haiku-4-5-20251001' }, speed: 'fast', verified: false },
+  { id: 'openai:gpt-6-luna', provider: 'openai', adapter: 'openaiStyle', baseUrl: 'https://openai.mpp.tempo.xyz', modelName: 'gpt-6-luna', label: 'GPT-6 Luna (OpenAI)', taskTypes: TEXT, arena: { text: 'gpt-6-luna-max' }, speed: 'fast', verified: true },
+  { id: 'openai:gpt-5.6-sol', provider: 'openai', adapter: 'openaiStyle', baseUrl: 'https://openai.mpp.tempo.xyz', modelName: 'gpt-5.6-sol', label: 'GPT-5.6 Sol (OpenAI)', taskTypes: TEXT, arena: { text: 'gpt-5.6-sol-xhigh' }, speed: 'medium', verified: true },
+  { id: 'anthropic:claude-sonnet-5-5', provider: 'anthropic', adapter: 'openaiStyle', baseUrl: 'https://anthropic.mpp.tempo.xyz', modelName: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (Anthropic)', taskTypes: TEXT, arena: { text: 'claude-sonnet-5.5-xhigh' }, speed: 'medium', verified: true },
+  { id: 'anthropic:claude-haiku-4-5', provider: 'anthropic', adapter: 'openaiStyle', baseUrl: 'https://anthropic.mpp.tempo.xyz', modelName: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Anthropic)', taskTypes: TEXT, arena: { text: 'claude-haiku-4-5-20251001' }, speed: 'fast', verified: true },
 
   // ---- Locus gateways (charge per call, ~$0.004–0.02 floor) ----
   locus('deepseek', 'deepseek-v4-flash', 'DeepSeek V4 Flash', { arena: { text: 'deepseek-v4-flash' }, speed: 'fast' }),
@@ -101,9 +102,7 @@ export const CURATED: CuratedModel[] = [
   locus('mistral', 'mistral-large-2512', 'Mistral Large 3', { arena: { text: 'mistral-large-3' } }),
   locus('mistral', 'mistral-medium-3-5', 'Mistral Medium 3.5', { fallbackQuality: 0.55, taskTypes: ['chat', 'writing', 'translation'] }),
   locus('groq', 'openai/gpt-oss-120b', 'gpt-oss-120b on Groq', { arena: { text: 'gpt-oss-120b' }, speed: 'fast' }),
-  locus('groq', 'llama-3.3-70b-versatile', 'Llama 3.3 70B on Groq', { arena: { text: 'llama-3.3-70b-instruct' }, speed: 'fast' }),
   locus('perplexity', 'sonar-pro', 'Perplexity Sonar Pro', { arena: { search: 'ppl-sonar-pro-high' }, taskTypes: ['research'], web: true }),
-  locus('perplexity', 'sonar-reasoning-pro', 'Perplexity Sonar Reasoning Pro', { arena: { search: 'ppl-sonar-reasoning-pro-high' }, taskTypes: ['research'], web: true, speed: 'slow' }),
   locus('perplexity', 'sonar', 'Perplexity Sonar', { fallbackQuality: 0.55, taskTypes: ['research'], web: true, speed: 'fast' }),
 
   // ---- Images ----
