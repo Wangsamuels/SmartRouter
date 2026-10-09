@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@sentry/node": "^9",
     "@smartrouter/config": "workspace:*",
     "@smartrouter/db": "workspace:*",
     "@smartrouter/shared": "workspace:*",

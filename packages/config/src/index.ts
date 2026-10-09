@@ -18,6 +18,8 @@ const EnvSchema = z.object({
   HOT_WALLET_DAILY_LIMIT_USD: z.coerce.number().positive().default(20),
   /** Use the mock provider for every paid model (automatic on testnet). */
   MOCK_PROVIDERS: z.enum(['auto', 'true', 'false']).default('auto'),
+  /** Testnet/CI only: mock models wait this long before the first token (streaming/heartbeat tests). */
+  MOCK_FIRST_TOKEN_MS: z.coerce.number().int().nonnegative().optional(),
   FEE_PAYER_URL: optionalStr,
   /** HMAC key that binds MPP challenges to this server (32+ chars). Same value on every dyno. */
   MPP_SECRET_KEY: optionalStr.pipe(z.string().min(32).optional()),
@@ -51,7 +53,8 @@ const EnvSchema = z.object({
   // Free fallback model (Cloudflare Workers AI; Groq free tier as backup)
   CLOUDFLARE_ACCOUNT_ID: optionalStr,
   CLOUDFLARE_AI_TOKEN: optionalStr,
-  FREE_MODEL: z.string().default('@cf/meta/llama-3.1-8b-instruct'),
+  /** fp8-fast: same Llama 3.1 8B, ~3–4× more free messages per day than the full-precision model. */
+  FREE_MODEL: z.string().default('@cf/meta/llama-3.1-8b-instruct-fp8-fast'),
   GROQ_FREE_API_KEY: optionalStr,
   FREE_DAILY_MESSAGES: z.coerce.number().int().nonnegative().default(30),
   FREE_GLOBAL_DAILY_USD: z.coerce.number().nonnegative().default(3),
@@ -61,6 +64,8 @@ const EnvSchema = z.object({
   CHAT_CONTEXT_TOKENS: z.coerce.number().int().positive().default(8000),
   /** Frontend origins allowed by CORS; the first one's host is the SIWE domain. */
   APP_ORIGINS: z.string().default('http://localhost:5173'),
+  /** Multiplies every per-IP rate limit (e.g. 10 during a load test). */
+  RATE_LIMIT_SCALE: z.coerce.number().positive().default(1),
   HEROKU_SLUG_COMMIT: optionalStr,
 })
 
@@ -109,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     },
     /** Mainnet MPP providers can't be paid on testnet, so paid models run on the mock adapter. */
     mockProviders: e.MOCK_PROVIDERS === 'auto' ? e.TEMPO_NETWORK === 'moderato' : e.MOCK_PROVIDERS === 'true',
+    mockFirstTokenMs: e.MOCK_FIRST_TOKEN_MS,
     app: {
       origins: e.APP_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
       /** Hosts a SIWE message may name as its domain. */
@@ -142,6 +148,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       maxOutputTokens: e.FREE_MAX_OUTPUT_TOKENS,
     },
     chat: { contextTokens: e.CHAT_CONTEXT_TOKENS },
+    rateLimitScale: e.RATE_LIMIT_SCALE,
   } as const
 }
 

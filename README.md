@@ -33,12 +33,24 @@ pnpm smoke:providers --pay --budget=2 --write   # one real paid call per model; 
 API_URL=http://localhost:3000 pnpm e2e:api      # sign in with a throwaway wallet and exercise chats/quotes
 API_URL=http://localhost:3000 pnpm testnet:session   # paid /run on Moderato: 402 → open session → SSE → voucher → top-up → close
 API_URL=… NETWORK=tempo PAYER_KEY_FILE=.test-user-wallet pnpm treasury:check   # proves spend reaches the treasury, rest returns to the user
+API_URL=… USERS=20 RUNS=5 pnpm load:test   # testnet load + concurrency: parallel paid users, burst limit, books balance, treasury
 TEST_DATABASE_URL=postgres://… pnpm test         # also runs the Postgres session-store concurrency tests
 pnpm test                        # unit tests
 ```
 
 On testnet (`TEMPO_NETWORK=moderato`) paid models run on the mock provider (MPP providers are mainnet-only);
 set `MOCK_PROVIDERS=false` to get real 402 quotes locally. The free model always runs on Cloudflare.
+
+## Limits and monitoring
+
+- Rate limits per client IP in Redis (fail open if Redis is down): 600 req/min overall, 30/min on /auth,
+  120/min on /run, 90/min on quotes. `RATE_LIMIT_SCALE` multiplies them (e.g. for a load test).
+- At most 3 answers streaming at once per user (429 `RATE_LIMITED` beyond that).
+- The mppx client allows one paid request at a time per session: the frontend must queue paid runs.
+- Sentry (`SENTRY_DSN`): unhandled API errors, failed worker jobs, and `[alert]`s (low wallet balances,
+  settlement failures, reconciliation mismatches, refunds short of the charge).
+- On SIGTERM the API drains streaming answers for up to 25 s; runs cut off by a restart are refunded by
+  the worker's `stale-runs` job after 8 minutes.
 
 ## Paid runs (MPP sessions)
 

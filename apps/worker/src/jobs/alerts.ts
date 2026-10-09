@@ -1,12 +1,12 @@
 /**
  * Wallet alerts (every 15 min): the hot wallet that pays providers (mainnet USDC.e), the
  * operator that pays settlement and sponsored fees, and the hot wallet's daily spend cap.
- * Alerts are `[alert]` log lines (Sentry picks them up in step 8).
+ * Alerts go to the logs as `[alert]` lines and to Sentry as warnings.
  */
 import { createPublicClient, erc20Abi, http, type Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { tempo, tempoModerato } from 'viem/chains'
-import { pgSpendLimiter } from '@smartrouter/core'
+import { alert, pgSpendLimiter } from '@smartrouter/core'
 import type { JobDeps } from './index.js'
 
 const USDCE = '0x20c000000000000000000000b9537d11c60e8b50' as const
@@ -19,13 +19,13 @@ export async function walletAlerts({ cfg, db, sessions }: JobDeps) {
   if (cfg.treasury.hotWalletKey) {
     const hot = privateKeyToAccount(cfg.treasury.hotWalletKey).address
     const bal = await balance(tempo, 'https://rpc.tempo.xyz', USDCE, hot)
-    if (bal < cfg.alerts.hotWalletMinMicro) console.warn(`[alert] hot wallet ${hot} low: $${usd(bal)} USDC.e (min $${usd(cfg.alerts.hotWalletMinMicro)}) — paid runs will fail when it runs out`)
+    if (bal < cfg.alerts.hotWalletMinMicro) alert(`hot wallet ${hot} low: $${usd(bal)} USDC.e (min $${usd(cfg.alerts.hotWalletMinMicro)}) — paid runs will fail when it runs out`)
     const spent = await pgSpendLimiter(db, { dailyLimitMicro: cfg.treasury.hotWalletDailyLimitMicro, token: USDCE }).spentToday()
-    if (spent * 10n >= cfg.treasury.hotWalletDailyLimitMicro * 8n) console.warn(`[alert] hot wallet spent $${usd(spent)} of its $${usd(cfg.treasury.hotWalletDailyLimitMicro)} daily cap`)
+    if (spent * 10n >= cfg.treasury.hotWalletDailyLimitMicro * 8n) alert(`hot wallet spent $${usd(spent)} of its $${usd(cfg.treasury.hotWalletDailyLimitMicro)} daily cap`)
   }
   if (sessions) {
     const chain = cfg.network.name === 'tempo' ? tempo : tempoModerato
     const bal = await balance(chain, cfg.network.rpcUrl, cfg.tokens.payment, sessions.operator.address)
-    if (bal < cfg.alerts.operatorMinMicro) console.warn(`[alert] operator ${sessions.operator.address} low: $${usd(bal)} (min $${usd(cfg.alerts.operatorMinMicro)}) — settlement and sponsored fees need it`)
+    if (bal < cfg.alerts.operatorMinMicro) alert(`operator ${sessions.operator.address} low: $${usd(bal)} (min $${usd(cfg.alerts.operatorMinMicro)}) — settlement and sponsored fees need it`)
   }
 }

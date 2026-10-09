@@ -36,6 +36,7 @@ export function createProviderRuntime(cfg: Config, opts: { db?: Db; onAttempt?: 
   })
   const adapters = createAdapters({
     payer,
+    mock: cfg.mockFirstTokenMs !== undefined ? { firstTokenMs: cfg.mockFirstTokenMs } : undefined,
     free: { cloudflareAccountId: cfg.free.cloudflareAccountId, cloudflareToken: cfg.free.cloudflareToken, model: cfg.free.model, groqKey: cfg.free.groqKey },
   })
   return {

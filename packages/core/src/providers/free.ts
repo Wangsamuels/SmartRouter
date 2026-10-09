@@ -8,9 +8,14 @@ import { sseData, textFromChoices, timeoutSignal } from './util.js'
 /** Cloudflare bills $0.011 per 1,000 neurons beyond the free daily 10k = 11 micro-USD per neuron. */
 export const MICRO_PER_NEURON = 11
 
-// Llama 3.1 8B rates (neurons per token), used to estimate cost before the call.
-const NEURONS_IN = 25_608 / 1e6
-const NEURONS_OUT = 75_147 / 1e6
+// Neurons per token by model (Cloudflare price ÷ $0.011 per 1k neurons), to estimate cost
+// when the response carries no usage. Default: llama-3.1-8b-instruct-fp8-fast.
+const NEURON_RATES: Record<string, { in: number; out: number }> = {
+  '@cf/meta/llama-3.1-8b-instruct': { in: 25_608 / 1e6, out: 75_147 / 1e6 },
+  '@cf/meta/llama-3.1-8b-instruct-fp8': { in: 13_778 / 1e6, out: 26_128 / 1e6 },
+  '@cf/meta/llama-3.1-8b-instruct-fp8-fast': { in: 4_119 / 1e6, out: 34_868 / 1e6 },
+}
+const DEFAULT_RATES = NEURON_RATES['@cf/meta/llama-3.1-8b-instruct-fp8-fast']!
 
 export type FreeConfig = {
   cloudflareAccountId?: string
@@ -25,8 +30,9 @@ function asText(task: Task): TextTask {
   return task
 }
 
-export function estimateFreeCostMicro(task: TextTask): bigint {
-  const neurons = messagesTokens(task.messages) * NEURONS_IN + task.maxOutputTokens * NEURONS_OUT
+export function estimateFreeCostMicro(task: TextTask, model?: string): bigint {
+  const r = (model && NEURON_RATES[model]) || DEFAULT_RATES
+  const neurons = messagesTokens(task.messages) * r.in + task.maxOutputTokens * r.out
   return BigInt(Math.ceil(neurons * MICRO_PER_NEURON))
 }
 
@@ -53,7 +59,7 @@ export function cloudflareAdapter(cfg: FreeConfig, fetchImpl: typeof fetch = fet
     }
     if (!text) throw new ProviderError('empty response from Cloudflare', 'bad_response')
     const neurons = Number(usage?.neurons ?? 0)
-    const costMicro = neurons > 0 ? BigInt(Math.ceil(neurons * MICRO_PER_NEURON)) : estimateFreeCostMicro(task)
+    const costMicro = neurons > 0 ? BigInt(Math.ceil(neurons * MICRO_PER_NEURON)) : estimateFreeCostMicro(task, cfg.model)
     return { text, tokensIn: usage?.prompt_tokens, tokensOut: usage?.completion_tokens, costMicro, receipt: `cloudflare:neurons=${neurons.toFixed(2)}` }
   }
 
@@ -77,7 +83,7 @@ export function cloudflareAdapter(cfg: FreeConfig, fetchImpl: typeof fetch = fet
     name: 'cloudflare',
     payment: 'free',
     async quote(_model, task) {
-      return { costMicro: estimateFreeCostMicro(asText(task)), source: 'free' }
+      return { costMicro: estimateFreeCostMicro(asText(task), cfg.model), source: 'free' }
     },
     async run(_model, task, ctx) {
       const t = asText(task)

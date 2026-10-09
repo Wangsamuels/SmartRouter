@@ -6,6 +6,7 @@
 import { and, eq, sql, schema, type Db } from '@smartrouter/db'
 import type { SessionServer } from './payments-in/server.js'
 import type { MediaStore } from './storage.js'
+import { alert } from './observability.js'
 
 export type RequestRow = typeof schema.requests.$inferSelect
 
@@ -101,7 +102,7 @@ export async function finishFailure(deps: FinishDeps, req: RequestRow, err: { co
   if (req.channelId && req.priceMicro > 0n && sessions) {
     refundedMicro = await sessions.refund(req.channelId, req.priceMicro)
     if (refundedMicro < req.priceMicro)
-      console.error(`[refund] channel ${req.channelId} already settled past the refund; owe ${req.priceMicro - refundedMicro} micro to request ${req.id}`)
+      alert(`refund short: channel ${req.channelId} already settled past it; owe ${req.priceMicro - refundedMicro} micro for request ${req.id}`, { requestId: req.id })
   }
   // Both sides of the failed turn leave the model's context (the UI shows them with "retry").
   if (req.assistantMessageId) await db.update(schema.messages).set({ status: 'failed', content: '' }).where(eq(schema.messages.id, req.assistantMessageId))

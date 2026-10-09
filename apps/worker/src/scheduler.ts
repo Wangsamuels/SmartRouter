@@ -5,11 +5,12 @@
  */
 import PgBoss from 'pg-boss'
 import { config, needsTls } from '@smartrouter/config'
-import { createMediaStore, createProviderRuntime, createSessionServer, type SessionServer } from '@smartrouter/core'
+import { captureError, createMediaStore, createProviderRuntime, createSessionServer, flushObservability, initObservability, type SessionServer } from '@smartrouter/core'
 import { createDb, schema, sql } from '@smartrouter/db'
 import { jobs, refreshCatalog } from './jobs/index.js'
 
 const cfg = config()
+initObservability(cfg, 'worker')
 const { db, sql: pg } = createDb(cfg.db.url, { max: 3 })
 const boss = new PgBoss({
   connectionString: cfg.db.url,
@@ -32,7 +33,13 @@ for (const job of jobs) {
   await boss.createQueue(job.name)
   await boss.schedule(job.name, job.cron, undefined, { tz: 'UTC' })
   await boss.work(job.name, async () => {
-    await job.handler({ cfg, db, boss, runtime, sessions, media })
+    try {
+      await job.handler({ cfg, db, boss, runtime, sessions, media })
+    } catch (e) {
+      console.error(`[job ${job.name}] failed:`, (e as Error).message)
+      captureError(e, { job: job.name })
+      throw e
+    }
   })
 }
 console.log(`smartrouter-worker started (${cfg.network.label}); jobs: ${jobs.map((j) => j.name).join(', ')}`)
@@ -44,6 +51,7 @@ if (n === 0) await refreshCatalog({ cfg, db }).catch((e) => console.error('[cata
 const shutdown = async (signal: string) => {
   console.log(`${signal} received, stopping worker`)
   await boss.stop({ graceful: true, timeout: 20_000 })
+  await flushObservability()
   await pg.end({ timeout: 5 })
   process.exit(0)
 }

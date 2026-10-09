@@ -6,6 +6,7 @@
  * Mismatches are `[alert]` lines.
  */
 import { sql } from '@smartrouter/db'
+import { alert } from '@smartrouter/core'
 import type { JobDeps } from './index.js'
 
 const usd = (m: bigint | string | number) => (Number(m) / 1e6).toFixed(4)
@@ -26,11 +27,11 @@ export async function reconcile({ db, sessions }: JobDeps) {
       if (!state) continue
       if (state.spent !== BigInt(r.billed)) {
         problems++
-        console.warn(`[alert] reconcile ${r.channel_id}: channel spent $${usd(state.spent)} ≠ billed requests $${usd(r.billed)}`)
+        alert(`reconcile ${r.channel_id}: channel spent $${usd(state.spent)} ≠ billed requests $${usd(r.billed)}`)
       }
       if (r.status === 'closed' && BigInt(r.received) !== state.spent) {
         problems++
-        console.warn(`[alert] reconcile ${r.channel_id}: closed, treasury received $${usd(r.received)} ≠ spent $${usd(state.spent)}`)
+        alert(`reconcile ${r.channel_id}: closed, treasury received $${usd(r.received)} ≠ spent $${usd(state.spent)}`)
       }
     }
   }

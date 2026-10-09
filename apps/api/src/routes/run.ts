@@ -22,6 +22,7 @@ import { AppError } from '../middleware/error.js'
 import { findModel, type CatalogModel } from '../services/catalog.js'
 import { freeRemaining, freeSpentToday, promptHash, type TaskInput } from '../services/quotes.js'
 import { runAndStream, SSE_HEADERS, sseStream, type RunArgs } from '../services/runner.js'
+import { concurrency } from '../middleware/rate-limit.js'
 import { SYSTEM_PROMPT, turnInput, type ChatRow } from '../services/turns.js'
 
 const RunBody = z.object({
@@ -35,6 +36,8 @@ type QuoteRow = typeof schema.quotes.$inferSelect
 const usd = (micro: bigint) => Number(micro) / 1e6
 /** Nominal amount for a challenge issued only so the client can open / top up / close. */
 const MANAGEMENT_AMOUNT_MICRO = 1_000n
+/** Answers one user can have streaming at once (Redis-backed, across dynos). */
+const MAX_CONCURRENT_RUNS = 3
 
 export function runRoutes(ctx: AppContext) {
   const app = new Hono<AuthVars>()
@@ -99,7 +102,9 @@ export function runRoutes(ctx: AppContext) {
     const exhausted = remaining !== undefined && remaining < quote.priceMicro
     const body = {
       code: exhausted ? 'ALLOCATION_EXHAUSTED' : 'PAYMENT_REQUIRED',
-      message: exhausted ? 'Your allocation is used up. Top up to keep going, or continue on the free model.' : 'Payment required: open a session (or sign the next voucher) and retry.',
+      message: exhausted
+        ? 'Your allocation is used up. Top up to keep going, or continue on the free model.'
+        : 'Payment required: open a session (or sign the next voucher) and retry.',
       details: {
         priceUsd: usd(quote.priceMicro),
         channelId: open?.row.channelId,
@@ -140,7 +145,10 @@ export function runRoutes(ctx: AppContext) {
   }
 
   async function loadQuote(userId: string, quoteId: string, prompt: string): Promise<QuoteRow> {
-    const [q] = await ctx.db.select().from(schema.quotes).where(and(eq(schema.quotes.id, quoteId), eq(schema.quotes.userId, userId)))
+    const [q] = await ctx.db
+      .select()
+      .from(schema.quotes)
+      .where(and(eq(schema.quotes.id, quoteId), eq(schema.quotes.userId, userId)))
     if (!q) throw new AppError('NOT_FOUND', 'Quote not found')
     if (q.usedAt) throw new AppError('QUOTE_USED', 'This quote already ran')
     if (q.expiresAt.getTime() < Date.now()) throw new AppError('QUOTE_EXPIRED', 'Quote expired — get a new one')
@@ -169,16 +177,32 @@ export function runRoutes(ctx: AppContext) {
     return { taskType: quote.taskType, complexity, prompt, rawPrompt: prompt, messages, contextTokens: estimateTokens(SYSTEM_PROMPT + prompt), maxOutputTokens }
   }
 
-  async function createRequest(args: { user: AuthUser; quote: QuoteRow; model: CatalogModel; chat?: ChatRow; prompt: string; channelId?: string; compareGroup?: string; isFree: boolean }) {
+  async function createRequest(args: {
+    user: AuthUser
+    quote: QuoteRow
+    model: CatalogModel
+    chat?: ChatRow
+    prompt: string
+    channelId?: string
+    compareGroup?: string
+    isFree: boolean
+  }) {
     const { user, quote, model, chat, prompt } = args
     return ctx.db.transaction(async (tx) => {
       let userMessageId: string | undefined
       let assistantMessageId: string | undefined
       // Compare runs stay out of the chat until the user picks a winner (/compare/vote).
       if (chat && !args.compareGroup) {
-        const [locked] = await tx.select({ n: schema.chats.messageCount, title: schema.chats.title }).from(schema.chats).where(eq(schema.chats.id, chat.id)).for('update')
+        const [locked] = await tx
+          .select({ n: schema.chats.messageCount, title: schema.chats.title })
+          .from(schema.chats)
+          .where(eq(schema.chats.id, chat.id))
+          .for('update')
         const n = locked!.n
-        const [um] = await tx.insert(schema.messages).values({ chatId: chat.id, seq: n + 1, role: 'user', content: prompt }).returning({ id: schema.messages.id })
+        const [um] = await tx
+          .insert(schema.messages)
+          .values({ chatId: chat.id, seq: n + 1, role: 'user', content: prompt })
+          .returning({ id: schema.messages.id })
         const [am] = await tx
           .insert(schema.messages)
           .values({ chatId: chat.id, seq: n + 2, role: 'assistant', content: '', modelId: model.id, status: 'streaming' })
@@ -213,7 +237,11 @@ export function runRoutes(ctx: AppContext) {
           priceMicro: quote.priceMicro,
         })
         .returning()
-      if (userMessageId) await tx.update(schema.messages).set({ requestId: req!.id }).where(sql`${schema.messages.id} in (${userMessageId}, ${assistantMessageId})`)
+      if (userMessageId)
+        await tx
+          .update(schema.messages)
+          .set({ requestId: req!.id })
+          .where(sql`${schema.messages.id} in (${userMessageId}, ${assistantMessageId})`)
       return req!
     })
   }
@@ -222,15 +250,25 @@ export function runRoutes(ctx: AppContext) {
     const [row] = await ctx.db
       .select({ total: sql<string>`coalesce(sum(${schema.requests.priceMicro}),0)::text` })
       .from(schema.requests)
-      .where(and(eq(schema.requests.userId, userId), sql`${schema.requests.status} in ('pending','running','succeeded')`, sql`${schema.requests.createdAt} > now() - interval '7 days'`))
+      .where(
+        and(
+          eq(schema.requests.userId, userId),
+          sql`${schema.requests.status} in ('pending','running','succeeded')`,
+          sql`${schema.requests.createdAt} > now() - interval '7 days'`,
+        ),
+      )
     return BigInt(row?.total ?? '0')
   }
 
-  function stream(args: Omit<RunArgs, 'sse'>, meta: Record<string, unknown>) {
+  type Slot = { release: () => Promise<void>; handedOff: boolean }
+  const runSlots = concurrency(ctx.redis, { max: MAX_CONCURRENT_RUNS, ttlMs: 10 * 60_000 })
+
+  function stream(args: Omit<RunArgs, 'sse' | 'onDone'>, meta: Record<string, unknown>, slot: Slot) {
+    slot.handedOff = true
     const sse = sseStream()
     sse.comment('started') // first byte right away: Heroku's router wants a response within 30 s
     sse.send('meta', meta)
-    void runAndStream(ctx, { ...args, sse })
+    void runAndStream(ctx, { ...args, sse, onDone: slot.release })
     return new Response(sse.stream, { status: 200, headers: SSE_HEADERS })
   }
 
@@ -271,78 +309,106 @@ export function runRoutes(ctx: AppContext) {
     if (!model) throw new AppError('PROVIDER_UNAVAILABLE', 'That model is no longer available — get a new quote')
     let chat: ChatRow | undefined
     if (quote.chatId) {
-      ;[chat] = await ctx.db.select().from(schema.chats).where(and(eq(schema.chats.id, quote.chatId), eq(schema.chats.userId, user.id), sql`${schema.chats.archivedAt} is null`))
+      ;[chat] = await ctx.db
+        .select()
+        .from(schema.chats)
+        .where(and(eq(schema.chats.id, quote.chatId), eq(schema.chats.userId, user.id), sql`${schema.chats.archivedAt} is null`))
       if (!chat) throw new AppError('NOT_FOUND', 'Chat not found')
     }
     const input = await buildInput(quote, chat, model, prompt)
     const slider = chat?.slider ?? user.slider
 
-    // ----- free model -----
-    if (model.payment === 'free') {
-      if ((await freeRemaining(ctx, user.id)) <= 0)
-        throw new AppError('FREE_LIMIT_REACHED', `You've used today's ${ctx.cfg.free.dailyMessages} free messages. They reset at 00:00 UTC.`, { scope: 'user' })
-      if ((await freeSpentToday(ctx)) >= BigInt(Math.round(ctx.cfg.free.globalDailyUsd * 1e6)))
-        throw new AppError('FREE_LIMIT_REACHED', 'The free model is at capacity for today. Try again tomorrow or use a paid model.', { scope: 'global' })
-      if (!(await claimQuote(quote.id))) throw new AppError('QUOTE_USED', 'This quote already ran')
-      const day = new Date().toISOString().slice(0, 10)
-      await ctx.db
-        .insert(schema.freeUsage)
-        .values({ userId: user.id, day, messages: 1 })
-        .onConflictDoUpdate({ target: [schema.freeUsage.userId, schema.freeUsage.day], set: { messages: sql`${schema.freeUsage.messages} + 1` } })
-      const req = await createRequest({ user, quote, model, chat, prompt, compareGroup, isFree: true })
-      return stream(
-        { req, model, input, slider, estCostMicro: 0n },
-        { requestId: req.id, modelId: model.id, label: model.label, priceUsd: 0, free: true, chatId: chat?.id, userMessageId: req.userMessageId, assistantMessageId: req.assistantMessageId },
-      )
-    }
-
-    // ----- paid model -----
-    if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured on this server')
-    if ((await weeklySpent(user.id)) + quote.priceMicro > user.weeklyLimitMicro)
-      throw new AppError('ALLOCATION_EXHAUSTED', `This would pass your weekly limit of $${usd(user.weeklyLimitMicro).toFixed(2)}. Raise it in settings or continue free.`, {
-        reason: 'weekly_limit',
-        freeFallback: await freeFallbackInfo(user, quote.taskType),
-      })
-
-    const result = await ctx.sessions.charge(c.req.raw, quote.priceMicro, { quote: quote.id })
-    if (result.status === 402) return paymentRequired(user, quote, result.challenge as Response)
-
-    // A credential for top-up/close that happened to carry a body: answer as management.
+    const release = await runSlots.acquire(user.id)
+    if (!release)
+      throw new AppError('RATE_LIMITED', `You already have ${MAX_CONCURRENT_RUNS} answers running — wait for one to finish`, { limit: 'concurrent_runs' })
+    const slot: Slot = { release, handedOff: false }
     try {
-      const mgmt = await result.withReceipt()
-      return mgmt
-    } catch (e) {
-      if (!Mppx.isMissingReceiptResponseError(e)) throw e
-    }
+      // ----- free model -----
+      if (model.payment === 'free') {
+        if ((await freeRemaining(ctx, user.id)) <= 0)
+          throw new AppError('FREE_LIMIT_REACHED', `You've used today's ${ctx.cfg.free.dailyMessages} free messages. They reset at 00:00 UTC.`, {
+            scope: 'user',
+          })
+        if ((await freeSpentToday(ctx)) >= BigInt(Math.round(ctx.cfg.free.globalDailyUsd * 1e6)))
+          throw new AppError('FREE_LIMIT_REACHED', 'The free model is at capacity for today. Try again tomorrow or use a paid model.', { scope: 'global' })
+        if (!(await claimQuote(quote.id))) throw new AppError('QUOTE_USED', 'This quote already ran')
+        const day = new Date().toISOString().slice(0, 10)
+        await ctx.db
+          .insert(schema.freeUsage)
+          .values({ userId: user.id, day, messages: 1 })
+          .onConflictDoUpdate({ target: [schema.freeUsage.userId, schema.freeUsage.day], set: { messages: sql`${schema.freeUsage.messages} + 1` } })
+        const req = await createRequest({ user, quote, model, chat, prompt, compareGroup, isFree: true })
+        return stream(
+          { req, model, input, slider, estCostMicro: 0n },
+          {
+            requestId: req.id,
+            modelId: model.id,
+            label: model.label,
+            priceUsd: 0,
+            free: true,
+            chatId: chat?.id,
+            userMessageId: req.userMessageId,
+            assistantMessageId: req.assistantMessageId,
+          },
+          slot,
+        )
+      }
 
-    // The voucher was accepted and the price is now charged to the channel.
-    const cred = Credential.fromRequest<{ channelId: string }>(c.req.raw)
-    const channelId = cred.payload.channelId
-    const state = await recordChannel(user, channelId)
-    if (!state) {
-      await ctx.sessions.refund(channelId, quote.priceMicro)
-      throw new AppError('FORBIDDEN', 'That payment channel belongs to a different wallet than the one signed in')
+      // ----- paid model -----
+      if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured on this server')
+      if ((await weeklySpent(user.id)) + quote.priceMicro > user.weeklyLimitMicro)
+        throw new AppError(
+          'ALLOCATION_EXHAUSTED',
+          `This would pass your weekly limit of $${usd(user.weeklyLimitMicro).toFixed(2)}. Raise it in settings or continue free.`,
+          {
+            reason: 'weekly_limit',
+            freeFallback: await freeFallbackInfo(user, quote.taskType),
+          },
+        )
+
+      const result = await ctx.sessions.charge(c.req.raw, quote.priceMicro, { quote: quote.id })
+      if (result.status === 402) return paymentRequired(user, quote, result.challenge as Response)
+
+      // A credential for top-up/close that happened to carry a body: answer as management.
+      try {
+        const mgmt = await result.withReceipt()
+        return mgmt
+      } catch (e) {
+        if (!Mppx.isMissingReceiptResponseError(e)) throw e
+      }
+
+      // The voucher was accepted and the price is now charged to the channel.
+      const cred = Credential.fromRequest<{ channelId: string }>(c.req.raw)
+      const channelId = cred.payload.channelId
+      const state = await recordChannel(user, channelId)
+      if (!state) {
+        await ctx.sessions.refund(channelId, quote.priceMicro)
+        throw new AppError('FORBIDDEN', 'That payment channel belongs to a different wallet than the one signed in')
+      }
+      if (!(await claimQuote(quote.id))) {
+        await ctx.sessions.refund(channelId, quote.priceMicro)
+        throw new AppError('QUOTE_USED', 'This quote already ran (you were not charged twice)')
+      }
+      const req = await createRequest({ user, quote, model, chat, prompt, channelId, compareGroup, isFree: false })
+      const res = stream(
+        { req, model, input, slider, estCostMicro: quote.estCostMicro },
+        {
+          requestId: req.id,
+          modelId: model.id,
+          label: model.label,
+          priceUsd: usd(quote.priceMicro),
+          free: false,
+          chatId: chat?.id,
+          userMessageId: req.userMessageId,
+          assistantMessageId: req.assistantMessageId,
+          remainingUsd: usd(channelRemaining(state)),
+        },
+        slot,
+      )
+      return provisionalReceipt(await result.withReceipt(res), quote.priceMicro)
+    } finally {
+      if (!slot.handedOff) await slot.release()
     }
-    if (!(await claimQuote(quote.id))) {
-      await ctx.sessions.refund(channelId, quote.priceMicro)
-      throw new AppError('QUOTE_USED', 'This quote already ran (you were not charged twice)')
-    }
-    const req = await createRequest({ user, quote, model, chat, prompt, channelId, compareGroup, isFree: false })
-    const res = stream(
-      { req, model, input, slider, estCostMicro: quote.estCostMicro },
-      {
-        requestId: req.id,
-        modelId: model.id,
-        label: model.label,
-        priceUsd: usd(quote.priceMicro),
-        free: false,
-        chatId: chat?.id,
-        userMessageId: req.userMessageId,
-        assistantMessageId: req.assistantMessageId,
-        remainingUsd: usd(channelRemaining(state)),
-      },
-    )
-    return provisionalReceipt(await result.withReceipt(res), quote.priceMicro)
   })
 
   // ---------- GET /sessions/current ----------
@@ -351,7 +417,12 @@ export function runRoutes(ctx: AppContext) {
     const open = await currentChannel(user.id)
     return c.json({
       paidRunsEnabled: Boolean(ctx.sessions),
-      network: { chainId: ctx.cfg.network.chainId, token: ctx.cfg.tokens.payment, recipient: ctx.cfg.treasury.address, operator: ctx.sessions?.operator.address },
+      network: {
+        chainId: ctx.cfg.network.chainId,
+        token: ctx.cfg.tokens.payment,
+        recipient: ctx.cfg.treasury.address,
+        operator: ctx.sessions?.operator.address,
+      },
       suggestedDepositUsd: Math.max(ctx.cfg.pricing.defaultAllocationUsd, usd(user.allocationMicro)),
       session: open
         ? {

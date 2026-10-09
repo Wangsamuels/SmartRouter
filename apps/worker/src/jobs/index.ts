@@ -8,6 +8,7 @@ import { providerHealth } from './health.js'
 import { pollMediaJobs } from './media.js'
 import { reconcile } from './reconcile.js'
 import { settleSessions } from './settlement.js'
+import { failStaleRuns } from './stale.js'
 import { summariseChats } from './summaries.js'
 
 /**
@@ -35,6 +36,7 @@ export const jobs: JobDef[] = [
   },
   { name: 'catalog-refresh', cron: '0 2 * * *', handler: refreshCatalog },
   { name: 'media-jobs', cron: '* * * * *', handler: pollMediaJobs },
+  { name: 'stale-runs', cron: '*/2 * * * *', handler: failStaleRuns },
   { name: 'settle-sessions', cron: '*/2 * * * *', handler: settleSessions },
   { name: 'provider-health', cron: '*/5 * * * *', handler: providerHealth },
   { name: 'chat-summaries', cron: '*/10 * * * *', handler: summariseChats },

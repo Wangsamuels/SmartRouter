@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { bodyLimit } from 'hono/body-limit'
 import { secureHeaders } from 'hono/secure-headers'
 import type { AppContext } from './context.js'
 import { notFound, onError } from './middleware/error.js'
+import { AppError } from './middleware/error.js'
+import { clientIp, rateLimit } from './middleware/rate-limit.js'
 import { requestId } from './middleware/request-id.js'
 import { authRoutes } from './routes/auth.js'
 import { catalogRoutes } from './routes/catalog.js'
@@ -24,9 +27,31 @@ export function createApp(ctx: AppContext) {
       origin: (o) => (ctx.cfg.app.origins.includes(o) ? o : null),
       credentials: true,
       allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization'],
-      exposeHeaders: ['Payment-Receipt', 'WWW-Authenticate', 'x-request-id'],
+      exposeHeaders: ['Payment-Receipt', 'WWW-Authenticate', 'x-request-id', 'Retry-After'],
     }),
   )
+  // Prompts are capped at 32k chars by validation; 256 KB leaves room for JSON + history ids.
+  app.use(
+    '*',
+    bodyLimit({
+      maxSize: 256 * 1024,
+      onError: () => {
+        throw new AppError('VALIDATION_FAILED', 'Request body too large (256 KB max)')
+      },
+    }),
+  )
+
+  // Rate limits (per client IP, shared across dynos through Redis; fail open without Redis).
+  const ip = (c: Parameters<typeof clientIp>[0]) => clientIp(c)
+  const minute = 60_000
+  const n = (max: number) => Math.ceil(max * ctx.cfg.rateLimitScale)
+  app.use('*', rateLimit(ctx.redis, { name: 'ip', max: n(600), windowMs: minute, key: ip }))
+  app.use('/auth/*', rateLimit(ctx.redis, { name: 'auth', max: n(30), windowMs: minute, key: ip }))
+  app.use('/run', rateLimit(ctx.redis, { name: 'run', max: n(120), windowMs: minute, key: ip }))
+  app.use('/chats', rateLimit(ctx.redis, { name: 'chat-create', max: n(30), windowMs: minute, key: (c) => (c.req.method === 'POST' ? ip(c) : undefined) }))
+  app.use('/chats/:id/quote', rateLimit(ctx.redis, { name: 'quote', max: n(90), windowMs: minute, key: ip }))
+  app.use('/recommend', rateLimit(ctx.redis, { name: 'recommend', max: n(60), windowMs: minute, key: ip }))
+  app.use('/waitlist', rateLimit(ctx.redis, { name: 'waitlist', max: n(5), windowMs: 10 * minute, key: ip }))
 
   app.get('/', (c) => c.json({ name: 'smartrouter-api', network: ctx.cfg.network.name, version: ctx.cfg.version }))
   app.route('/', healthRoutes(ctx))

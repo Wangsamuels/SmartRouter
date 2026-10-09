@@ -19,7 +19,8 @@
     "test": "pnpm -r --if-present run test",
     "e2e:api": "tsx scripts/e2e-api.ts",
     "testnet:session": "tsx scripts/testnet-session.ts",
-    "treasury:check": "tsx scripts/treasury-check.ts"
+    "treasury:check": "tsx scripts/treasury-check.ts",
+    "load:test": "tsx scripts/load-test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -16,6 +16,7 @@
 import {
   FREE_MODEL_ID,
   ProviderError,
+  captureError,
   finishFailure,
   finishSuccess,
   type JobStatus,
@@ -79,6 +80,8 @@ const usd = (micro: bigint) => Number(micro) / 1e6
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export type RunArgs = {
+  /** Called once when the run is over (frees the user's concurrency slot). */
+  onDone?: () => void | Promise<void>
   req: RequestRow
   model: CatalogModel
   input: TaskInput
@@ -128,8 +131,13 @@ async function pollInline(ctx: AppContext, a: RunArgs, model: CatalogModel, jobI
   return undefined
 }
 
+/** Runs streaming right now in this process (the API drains these on SIGTERM). */
+let active = 0
+export const activeRuns = () => active
+
 export async function runAndStream(ctx: AppContext, a: RunArgs): Promise<void> {
   const { req, sse } = a
+  active++
   const hb = setInterval(() => sse.comment('hb'), HEARTBEAT_MS)
   const deps = { db: ctx.db, sessions: ctx.sessions, media: ctx.media }
   let model = a.model
@@ -193,6 +201,7 @@ export async function runAndStream(ctx: AppContext, a: RunArgs): Promise<void> {
     })
   } catch (e) {
     const err = e as ProviderError
+    if (!(e instanceof ProviderError)) captureError(e, { requestId: req.id, modelId: model.id })
     if (e !== counted) providerCost += err.paidMicro ?? 0n
     console.error(`[run ${req.id}] failed on ${model.id}:`, err.kind ?? '', err.message)
     const { refundedMicro } = await finishFailure(deps, req, { code: err.kind ?? 'internal', message: err.message, providerCostMicro: providerCost })
@@ -208,5 +217,7 @@ export async function runAndStream(ctx: AppContext, a: RunArgs): Promise<void> {
   } finally {
     clearInterval(hb)
     sse.close()
+    active--
+    await Promise.resolve(a.onDone?.()).catch(() => {})
   }
 }

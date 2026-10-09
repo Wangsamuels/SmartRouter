@@ -118,5 +118,5 @@ export const CURATED: CuratedModel[] = [
   { id: 'suno:v4.5', provider: 'suno', adapter: 'suno', baseUrl: 'https://suno.mpp.paywithlocus.com', modelName: 'V4_5', label: 'Suno V4.5', taskTypes: ['music'], fallbackQuality: 0.75, speed: 'slow', verified: true },
 
   // ---- Free fallback (SmartRouter-sponsored, Cloudflare Workers AI) ----
-  { id: FREE_MODEL_ID, provider: 'cloudflare', adapter: 'cloudflare', baseUrl: 'https://api.cloudflare.com', modelName: '@cf/meta/llama-3.1-8b-instruct', label: 'Free · Llama 3.1 8B', taskTypes: ['chat', 'writing', 'coding', 'translation'], arena: { text: 'llama-3.1-8b-instruct' }, speed: 'fast', verified: true },
+  { id: FREE_MODEL_ID, provider: 'cloudflare', adapter: 'cloudflare', baseUrl: 'https://api.cloudflare.com', modelName: '@cf/meta/llama-3.1-8b-instruct-fp8-fast', label: 'Free · Llama 3.1 8B', taskTypes: ['chat', 'writing', 'coding', 'translation'], arena: { text: 'llama-3.1-8b-instruct' }, speed: 'fast', verified: true },
 ]
