@@ -1,0 +1,12 @@
+.heroku-key
+.env
+.env.*
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.src-snapshot*.tgz
+_tmp_*
+.cloudflare
+scripts/out/
+!.env.example

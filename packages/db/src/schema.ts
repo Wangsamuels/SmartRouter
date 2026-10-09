@@ -1,0 +1,322 @@
+/**
+ * SmartRouter data model. Money is integer micro-USD (bigint, 6 decimals) — never floats.
+ * Wallet balances are read from Tempo, never stored.
+ */
+import { sql } from 'drizzle-orm'
+import {
+  bigint,
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  primaryKey,
+  real,
+  smallint,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core'
+
+const micro = (name: string) => bigint(name, { mode: 'bigint' })
+const ts = (name: string) => timestamp(name, { withTimezone: true })
+const createdAt = () => ts('created_at').notNull().defaultNow()
+
+// ---------- enums ----------
+export const sliderEnum = pgEnum('slider', ['cheapest', 'balanced', 'best'])
+export const taskTypeEnum = pgEnum('task_type', ['chat', 'writing', 'coding', 'research', 'translation', 'image', 'music'])
+export const sessionStatusEnum = pgEnum('session_status', ['open', 'closing', 'closed'])
+export const requestStatusEnum = pgEnum('request_status', ['pending', 'running', 'succeeded', 'failed', 'cancelled'])
+/** 'free' = SmartRouter-sponsored fallback model (Cloudflare Workers AI), never paid over MPP. */
+export const paymentKindEnum = pgEnum('payment_kind', ['session', 'charge', 'free'])
+export const messageRoleEnum = pgEnum('message_role', ['user', 'assistant', 'system'])
+export const messageStatusEnum = pgEnum('message_status', ['pending', 'streaming', 'done', 'failed'])
+export const providerSessionStatusEnum = pgEnum('provider_session_status', ['open', 'closing', 'closed'])
+export const aliasSourceEnum = pgEnum('alias_source', ['lmarena', 'aa', 'openrouter'])
+export const treasuryKindEnum = pgEnum('treasury_kind', ['settle', 'close', 'provider_topup', 'charge', 'swap', 'refill'])
+export const txStatusEnum = pgEnum('tx_status', ['pending', 'confirmed', 'failed'])
+export const waitlistInterestEnum = pgEnum('waitlist_interest', ['naira', 'credits'])
+
+// ---------- users & auth ----------
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tempoAddress: text('tempo_address').notNull().unique(), // lowercase 0x…
+  country: text('country'),
+  slider: sliderEnum('slider').notNull().default('balanced'),
+  allocationMicro: micro('allocation_micro').notNull().default(sql`2000000`),
+  weeklyLimitMicro: micro('weekly_limit_micro').notNull().default(sql`10000000`),
+  /** When the allocation runs out, continue the chat on the free model instead of stopping. */
+  autoFreeFallback: boolean('auto_free_fallback').notNull().default(true),
+  createdAt: createdAt(),
+})
+
+export const authNonces = pgTable(
+  'auth_nonces',
+  {
+    nonce: text('nonce').primaryKey(),
+    address: text('address').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+  },
+  (t) => [index('auth_nonces_expires_idx').on(t.expiresAt)],
+)
+
+// ---------- user payment channels (MPP sessions) ----------
+export const userSessions = pgTable(
+  'user_sessions',
+  {
+    channelId: text('channel_id').primaryKey(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    payer: text('payer').notNull(),
+    authorizedSigner: text('authorized_signer'),
+    depositMicro: micro('deposit_micro').notNull().default(sql`0`),
+    highestVoucherMicro: micro('highest_voucher_micro').notNull().default(sql`0`),
+    /** Only delivered results count; settle/close capture this, not highestVoucher. */
+    countedMicro: micro('counted_micro').notNull().default(sql`0`),
+    settledMicro: micro('settled_micro').notNull().default(sql`0`),
+    lastSettleTx: text('last_settle_tx'),
+    lastSettledAt: ts('last_settled_at'),
+    lastUsedAt: ts('last_used_at').notNull().defaultNow(),
+    status: sessionStatusEnum('status').notNull().default('open'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('user_sessions_user_status_idx').on(t.userId, t.status),
+    index('user_sessions_status_last_used_idx').on(t.status, t.lastUsedAt),
+  ],
+)
+
+// ---------- models & catalog ----------
+export const models = pgTable('models', {
+  id: text('id').primaryKey(), // e.g. 'openrouter:anthropic/claude-sonnet-4.5'
+  provider: text('provider').notNull(),
+  mppUrl: text('mpp_url').notNull(),
+  modelName: text('model_name').notNull(),
+  label: text('label').notNull().default(''),
+  adapter: text('adapter').notNull(), // openaiStyle | locus | fal | stableStudio | suno | cloudflare | mock
+  payment: paymentKindEnum('payment').notNull(),
+  taskTypes: taskTypeEnum('task_types').array().notNull(),
+  qualityByTask: jsonb('quality_by_task').$type<Partial<Record<string, number>>>().notNull().default({}),
+  priceEstMicro: micro('price_est_micro').notNull(),
+  medianLatencyMs: integer('median_latency_ms'),
+  speedClass: text('speed_class').notNull().default('medium'), // fast | medium | slow, until latency is measured
+  web: boolean('web').notNull().default(false), // grounded in live web search
+  errorRate: real('error_rate').notNull().default(0),
+  /** Model id proven by a paid call (gateways 402 even for unknown ids). */
+  verified: boolean('verified').notNull().default(false),
+  active: boolean('active').notNull().default(true),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+})
+
+export const modelAliases = pgTable(
+  'model_aliases',
+  {
+    leaderboardName: text('leaderboard_name').notNull(),
+    source: aliasSourceEnum('source').notNull(),
+    modelId: text('model_id').notNull().references(() => models.id, { onDelete: 'cascade' }),
+  },
+  (t) => [primaryKey({ columns: [t.source, t.leaderboardName] })],
+)
+
+// ---------- chats (one thread per topic; model can change per turn, like Cursor) ----------
+export const chats = pgTable(
+  'chats',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    title: text('title'), // auto-generated after the first turn; user can rename
+    taskType: taskTypeEnum('task_type').notNull(), // picked or classified when the chat starts
+    slider: sliderEnum('slider').notNull().default('balanced'),
+    currentModelId: text('current_model_id').references(() => models.id),
+    /** Running summary of older turns once history exceeds the context budget. */
+    summary: text('summary'),
+    summaryThroughSeq: integer('summary_through_seq').notNull().default(0),
+    messageCount: integer('message_count').notNull().default(0),
+    spentMicro: micro('spent_micro').notNull().default(sql`0`),
+    lastMessageAt: ts('last_message_at').notNull().defaultNow(),
+    archivedAt: ts('archived_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('chats_user_last_idx').on(t.userId, t.lastMessageAt.desc())],
+)
+
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chatId: uuid('chat_id').notNull().references(() => chats.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(), // 1, 2, 3… within the chat
+    role: messageRoleEnum('role').notNull(),
+    content: text('content').notNull().default(''),
+    attachments: jsonb('attachments').$type<{ kind: string; ref: string; mime?: string }[]>(),
+    modelId: text('model_id').references(() => models.id), // which model wrote this (assistant)
+    requestId: uuid('request_id'), // the paid/free run that produced it
+    resultRef: text('result_ref'), // image/music file in object storage
+    tokensIn: integer('tokens_in'),
+    tokensOut: integer('tokens_out'),
+    status: messageStatusEnum('status').notNull().default('done'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('messages_chat_seq_idx').on(t.chatId, t.seq)],
+)
+
+/** Per-user daily free-model usage (also capped globally by FREE_GLOBAL_DAILY_USD). */
+export const freeUsage = pgTable(
+  'free_usage',
+  {
+    userId: uuid('user_id').notNull().references(() => users.id),
+    day: text('day').notNull(), // YYYY-MM-DD UTC
+    messages: integer('messages').notNull().default(0),
+    costMicro: micro('cost_micro').notNull().default(sql`0`), // what Cloudflare charged us
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.day] })],
+)
+
+// ---------- quotes & requests ----------
+export const quotes = pgTable(
+  'quotes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    chatId: uuid('chat_id').references(() => chats.id),
+    taskType: taskTypeEnum('task_type').notNull(),
+    modelId: text('model_id').notNull().references(() => models.id),
+    promptHash: text('prompt_hash'), // /run must send the prompt that was quoted
+    contextTokens: integer('context_tokens'), // history + prompt tokens priced into the quote
+    priceMicro: micro('price_micro').notNull(), // what the user pays (0 for the free model)
+    estCostMicro: micro('est_cost_micro').notNull(), // what we expect to pay the provider
+    expiresAt: ts('expires_at').notNull(),
+    usedAt: ts('used_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('quotes_expires_idx').on(t.expiresAt)],
+)
+
+export const requests = pgTable(
+  'requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    quoteId: uuid('quote_id').notNull().unique().references(() => quotes.id), // idempotency key
+    channelId: text('channel_id').references(() => userSessions.channelId), // null for free runs
+    chatId: uuid('chat_id').references(() => chats.id),
+    userMessageId: uuid('user_message_id'),
+    assistantMessageId: uuid('assistant_message_id'),
+    modelId: text('model_id').notNull().references(() => models.id),
+    isFree: boolean('is_free').notNull().default(false),
+    fallbackReason: text('fallback_reason'), // e.g. allocation_exhausted, provider_failed
+    taskType: taskTypeEnum('task_type').notNull(),
+    compareGroup: uuid('compare_group'),
+    status: requestStatusEnum('status').notNull().default('pending'),
+    priceMicro: micro('price_micro').notNull(),
+    providerCostMicro: micro('provider_cost_micro'),
+    latencyMs: integer('latency_ms'),
+    providerReceipt: jsonb('provider_receipt'),
+    resultRef: text('result_ref'),
+    errorCode: text('error_code'),
+    createdAt: createdAt(),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    index('requests_user_created_idx').on(t.userId, t.createdAt.desc()),
+    index('requests_compare_group_idx').on(t.compareGroup),
+    index('requests_chat_idx').on(t.chatId, t.createdAt),
+  ],
+)
+
+// ---------- SmartRouter's own provider sessions ----------
+export const providerSessions = pgTable('provider_sessions', {
+  provider: text('provider').notNull(),
+  channelId: text('channel_id').primaryKey(),
+  depositMicro: micro('deposit_micro').notNull().default(sql`0`),
+  spentMicro: micro('spent_micro').notNull().default(sql`0`),
+  lastTopupAt: ts('last_topup_at'),
+  status: providerSessionStatusEnum('status').notNull().default('open'),
+  createdAt: createdAt(),
+})
+
+// ---------- feedback, compare, taste ----------
+export const feedback = pgTable(
+  'feedback',
+  {
+    requestId: uuid('request_id').notNull().references(() => requests.id),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    rating: smallint('rating').notNull(), // +1 / -1
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.requestId, t.userId] })],
+)
+
+export const compareVotes = pgTable(
+  'compare_votes',
+  {
+    compareGroup: uuid('compare_group').primaryKey(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    taskType: taskTypeEnum('task_type').notNull(),
+    winnerModelId: text('winner_model_id').notNull().references(() => models.id),
+    loserModelId: text('loser_model_id').notNull().references(() => models.id),
+    createdAt: createdAt(),
+  },
+  (t) => [index('compare_votes_task_idx').on(t.taskType)],
+)
+
+export const userTaste = pgTable(
+  'user_taste',
+  {
+    userId: uuid('user_id').notNull().references(() => users.id),
+    taskType: taskTypeEnum('task_type').notNull(),
+    modelId: text('model_id').notNull().references(() => models.id, { onDelete: 'cascade' }),
+    score: real('score').notNull().default(0),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.taskType, t.modelId] })],
+)
+
+// ---------- ops ----------
+export const providerHealth = pgTable(
+  'provider_health',
+  {
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+    provider: text('provider').notNull(),
+    checkedAt: ts('checked_at').notNull().defaultNow(),
+    ok: boolean('ok').notNull(),
+    latencyMs: integer('latency_ms'),
+    error: text('error'),
+  },
+  (t) => [index('provider_health_provider_checked_idx').on(t.provider, t.checkedAt.desc())],
+)
+
+export const treasuryMoves = pgTable(
+  'treasury_moves',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: treasuryKindEnum('kind').notNull(),
+    amountMicro: micro('amount_micro').notNull(),
+    token: text('token').notNull(),
+    txHash: text('tx_hash'),
+    refId: text('ref_id'), // channel id / request id this move belongs to
+    status: txStatusEnum('status').notNull().default('pending'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('treasury_moves_tx_hash_idx').on(t.txHash), index('treasury_moves_kind_created_idx').on(t.kind, t.createdAt)],
+)
+
+export const waitlist = pgTable(
+  'waitlist',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: text('email').notNull(),
+    country: text('country'),
+    interest: waitlistInterestEnum('interest').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('waitlist_email_interest_idx').on(t.email, t.interest)],
+)
+
+/** Backs mppx's AtomicStore: update(key, fn) runs under SELECT … FOR UPDATE. Never Redis. */
+export const sessionStore = pgTable('session_store', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+})

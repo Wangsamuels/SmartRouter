@@ -1,0 +1,19 @@
+{
+  "name": "smartrouter",
+  "description": "SmartRouter backend: MPP payments, model routing and recommendations on Tempo.",
+  "stack": "heroku-24",
+  "buildpacks": [{ "url": "heroku/nodejs" }],
+  "formation": {
+    "web": { "quantity": 1, "size": "basic" },
+    "worker": { "quantity": 1, "size": "basic" }
+  },
+  "addons": ["heroku-postgresql:essential-0", "heroku-redis:mini"],
+  "env": {
+    "TEMPO_NETWORK": { "value": "moderato" },
+    "SESSION_SECRET": { "generator": "secret" },
+    "MAX_PROVIDER_PRICE_MULTIPLIER": { "value": "2" },
+    "FEE_PCT": { "value": "10" },
+    "DEFAULT_ALLOCATION_USD": { "value": "2" },
+    "NODE_ENV": { "value": "production" }
+  }
+}

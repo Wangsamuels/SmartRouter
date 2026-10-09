@@ -1,0 +1,25 @@
+{
+  "name": "@smartrouter/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@smartrouter/config": "workspace:*",
+    "@smartrouter/shared": "workspace:*",
+    "@smartrouter/db": "workspace:*",
+    "mppx": "^0.13.1",
+    "viem": "^2.57.1",
+    "hyparquet": "^1.20.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}
