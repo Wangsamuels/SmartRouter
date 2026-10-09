@@ -53,6 +53,8 @@ export function healthRoutes(ctx: AppContext) {
           ? { status: rpcStatus, latencyMs: rpc.ms, blockNumber: Number(rpc.value.block), detail: rpcStatus === 'ok' ? undefined : `chainId ${rpc.value.chainId} != expected ${cfg.network.chainId}` }
           : { status: 'down', latencyMs: rpc.ms, detail: rpc.error },
         providers: { status: provStatus, healthy: prov.healthy, total: prov.total, detail: providers.ok ? undefined : providers.error },
+        // Paid runs (MPP sessions): needs TREASURY_ADDRESS, an operator key and MPP_SECRET_KEY.
+        payments: ctx.sessions ? { status: 'ok' as CheckStatus, operator: ctx.sessions.operator.address, mediaStorage: ctx.media.enabled } : { status: 'not_configured' as CheckStatus },
       },
       time: new Date().toISOString(),
     }

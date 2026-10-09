@@ -19,6 +19,7 @@ export const HealthResponse = z.object({
     redis: HealthCheck,
     rpc: HealthCheck.extend({ blockNumber: z.number().optional() }),
     providers: HealthCheck.extend({ healthy: z.number(), total: z.number() }),
+    payments: HealthCheck.extend({ operator: z.string().optional(), mediaStorage: z.boolean().optional() }).optional(),
   }),
   time: z.string(),
 })

@@ -17,7 +17,8 @@
     "catalog:build": "tsx --env-file-if-exists=.env scripts/build-catalog.ts",
     "smoke:providers": "tsx --env-file-if-exists=.env scripts/smoke-providers.ts",
     "test": "pnpm -r --if-present run test",
-    "e2e:api": "tsx scripts/e2e-api.ts"
+    "e2e:api": "tsx scripts/e2e-api.ts",
+    "testnet:session": "tsx scripts/testnet-session.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -29,6 +30,7 @@
     "@smartrouter/config": "workspace:*",
     "@smartrouter/core": "workspace:*",
     "@smartrouter/db": "workspace:*",
-    "viem": "^2.57.1"
+    "viem": "^2.57.1",
+    "mppx": "^0.13.1"
   }
 }

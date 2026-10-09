@@ -5,6 +5,7 @@
  */
 import PgBoss from 'pg-boss'
 import { config, needsTls } from '@smartrouter/config'
+import { createMediaStore, createProviderRuntime, createSessionServer, type SessionServer } from '@smartrouter/core'
 import { createDb, schema, sql } from '@smartrouter/db'
 import { jobs, refreshCatalog } from './jobs/index.js'
 
@@ -17,12 +18,21 @@ const boss = new PgBoss({
 })
 boss.on('error', (e: Error) => console.error('[pg-boss]', e))
 
+const runtime = createProviderRuntime(cfg, { db })
+const media = createMediaStore(cfg)
+let sessions: SessionServer | undefined
+try {
+  sessions = createSessionServer(cfg, db)
+} catch (e) {
+  console.warn(`[mpp] settlement/refunds disabled: ${(e as Error).message}`)
+}
+
 await boss.start()
 for (const job of jobs) {
   await boss.createQueue(job.name)
   await boss.schedule(job.name, job.cron, undefined, { tz: 'UTC' })
   await boss.work(job.name, async () => {
-    await job.handler({ cfg, db, boss })
+    await job.handler({ cfg, db, boss, runtime, sessions, media })
   })
 }
 console.log(`smartrouter-worker started (${cfg.network.label}); jobs: ${jobs.map((j) => j.name).join(', ')}`)

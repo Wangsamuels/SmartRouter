@@ -1,2 +1,3 @@
-// payments-in — implemented in later build steps (see Backend Architecture build order).
-export {}
+// Incoming payments: user MPP sessions (escrow channels) on Tempo.
+export * from './store.js'
+export * from './server.js'

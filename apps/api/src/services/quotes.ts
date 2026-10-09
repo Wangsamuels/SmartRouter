@@ -28,14 +28,18 @@ export type TaskInput = {
   /** Text tasks: what the model will see (system + history + new prompt). */
   messages?: ChatMessage[]
   contextTokens: number
-  /** Media tasks and hashing: the user's new prompt. */
+  /** Media tasks: what the model gets (may fold in the chat summary). */
   prompt: string
+  /** The user's own words, as typed (hashed into the quote; /run must send the same). */
+  rawPrompt?: string
+  /** Reply cap; defaults from complexity. /run reuses the value stored on the quote. */
+  maxOutputTokens?: number
 }
 
 export function toTask(input: TaskInput, model: CatalogModel): Task {
   if (input.taskType === 'image') return { kind: 'image', prompt: input.prompt }
   if (input.taskType === 'music') return { kind: 'music', prompt: input.prompt, instrumental: /\binstrumental\b/i.test(input.prompt) }
-  const maxOut = model.payment === 'free' ? Math.min(MAX_OUTPUT_TOKENS[input.complexity], 512) : MAX_OUTPUT_TOKENS[input.complexity]
+  const maxOut = input.maxOutputTokens ?? (model.payment === 'free' ? Math.min(MAX_OUTPUT_TOKENS[input.complexity], 512) : MAX_OUTPUT_TOKENS[input.complexity])
   return { kind: 'text', messages: input.messages ?? [{ role: 'user', content: input.prompt }], maxOutputTokens: maxOut }
 }
 
@@ -114,6 +118,7 @@ export async function createQuote(
     }
   }
   const priceMicro = model.payment === 'free' ? 0n : userPriceMicro(costMicro, ctx.cfg.pricing.feePct)
+  const task = toTask(input, model)
   const expiresAt = new Date(Date.now() + QUOTE_TTL_MS)
   const [row] = await ctx.db
     .insert(schema.quotes)
@@ -122,8 +127,9 @@ export async function createQuote(
       chatId: args.chatId,
       taskType: input.taskType,
       modelId: model.id,
-      promptHash: promptHash(input.prompt),
+      promptHash: promptHash(input.rawPrompt ?? input.prompt),
       contextTokens: input.contextTokens,
+      maxOutputTokens: task.kind === 'text' ? task.maxOutputTokens : null,
       priceMicro,
       estCostMicro: costMicro,
       expiresAt,

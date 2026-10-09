@@ -19,6 +19,12 @@ const EnvSchema = z.object({
   /** Use the mock provider for every paid model (automatic on testnet). */
   MOCK_PROVIDERS: z.enum(['auto', 'true', 'false']).default('auto'),
   FEE_PAYER_URL: optionalStr,
+  /** HMAC key that binds MPP challenges to this server (32+ chars). Same value on every dyno. */
+  MPP_SECRET_KEY: optionalStr.pipe(z.string().min(32).optional()),
+  /** Operator: signs settle/close for user channels and sponsors their open/top-up fees. Falls back to the hot wallet. */
+  OPERATOR_PRIVATE_KEY: optionalStr.pipe(z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'must be a 0x-prefixed 32-byte hex key').optional()),
+  /** Pay users' channel open/top-up fees from the operator wallet. */
+  SPONSOR_FEES: z.enum(['true', 'false']).default('true'),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: optionalStr,
   SESSION_SECRET: z.string().min(32),
@@ -26,6 +32,8 @@ const EnvSchema = z.object({
   S3_BUCKET: optionalStr,
   S3_ACCESS_KEY_ID: optionalStr,
   S3_SECRET_ACCESS_KEY: optionalStr,
+  /** Public base URL for the bucket (R2 public bucket URL or custom domain). */
+  S3_PUBLIC_URL: optionalStr,
   AA_API_KEY: optionalStr,
   SENTRY_DSN: optionalStr,
   MAX_PROVIDER_PRICE_MULTIPLIER: z.coerce.number().positive().default(2),
@@ -78,6 +86,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       hotWalletKey: e.HOT_WALLET_PRIVATE_KEY as `0x${string}` | undefined,
       hotWalletDailyLimitMicro: BigInt(Math.round(e.HOT_WALLET_DAILY_LIMIT_USD * 1e6)),
     },
+    mpp: {
+      secretKey: e.MPP_SECRET_KEY,
+      operatorKey: (e.OPERATOR_PRIVATE_KEY ?? e.HOT_WALLET_PRIVATE_KEY) as `0x${string}` | undefined,
+      sponsorFees: e.SPONSOR_FEES === 'true',
+    },
     /** Mainnet MPP providers can't be paid on testnet, so paid models run on the mock adapter. */
     mockProviders: e.MOCK_PROVIDERS === 'auto' ? e.TEMPO_NETWORK === 'moderato' : e.MOCK_PROVIDERS === 'true',
     app: {
@@ -93,6 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       bucket: e.S3_BUCKET,
       accessKeyId: e.S3_ACCESS_KEY_ID,
       secretAccessKey: e.S3_SECRET_ACCESS_KEY,
+      publicUrl: e.S3_PUBLIC_URL?.replace(/\/+$/, ''),
     },
     aaApiKey: e.AA_API_KEY,
     sentryDsn: e.SENTRY_DSN,

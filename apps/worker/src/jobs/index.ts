@@ -1,15 +1,16 @@
 import type PgBoss from 'pg-boss'
 import type { Config } from '@smartrouter/config'
-import { buildCatalog, createProviderRuntime, writeCatalog } from '@smartrouter/core'
+import { buildCatalog, createProviderRuntime, writeCatalog, type MediaStore, type ProviderRuntime, type SessionServer } from '@smartrouter/core'
 import type { Db } from '@smartrouter/db'
+import { pollMediaJobs } from './media.js'
 
 /**
  * Job registry. Each entry: queue name, cron (UTC), handler.
  * Step 7 adds: settle-user-sessions (every 5 min), close-idle-sessions (15 min),
  * provider-health (5 min), hot-wallet-alert (15 min), treasury-swap (daily),
- * reconciliation (03:00 UTC). Suno/StableStudio polling is enqueued per job, not cron.
+ * reconciliation (03:00 UTC).
  */
-export type JobDeps = { cfg: Config; db: Db; boss: PgBoss }
+export type JobDeps = { cfg: Config; db: Db; boss: PgBoss; runtime: ProviderRuntime; sessions?: SessionServer; media: MediaStore }
 export type JobDef = { name: string; cron: string; handler: (deps: JobDeps) => Promise<void> }
 
 export async function refreshCatalog({ cfg, db }: Pick<JobDeps, 'cfg' | 'db'>) {
@@ -29,4 +30,5 @@ export const jobs: JobDef[] = [
     },
   },
   { name: 'catalog-refresh', cron: '0 2 * * *', handler: refreshCatalog },
+  { name: 'media-jobs', cron: '* * * * *', handler: pollMediaJobs },
 ]

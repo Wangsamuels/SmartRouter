@@ -2,7 +2,7 @@ import { Redis } from 'ioredis'
 import { createPublicClient, http } from 'viem'
 import { tempo, tempoModerato } from 'viem/chains'
 import { config, needsTls } from '@smartrouter/config'
-import { createProviderRuntime } from '@smartrouter/core'
+import { createMediaStore, createProviderRuntime, createSessionServer, type SessionServer } from '@smartrouter/core'
 import { createDb } from '@smartrouter/db'
 
 /** Process-wide singletons. No request state lives here (dynos restart daily). */
@@ -27,8 +27,17 @@ export function createContext() {
   const rpc = createPublicClient({ chain, transport: http(cfg.network.rpcUrl, { timeout: 5_000, retryCount: 1 }) })
 
   const providers = createProviderRuntime(cfg, { db })
+  const media = createMediaStore(cfg)
 
-  return { cfg, db, sql, redis, rpc, providers, needsTls }
+  // Paid runs need the treasury, an operator key and MPP_SECRET_KEY; without them only free runs work.
+  let sessions: SessionServer | undefined
+  try {
+    sessions = createSessionServer(cfg, db)
+  } catch (e) {
+    console.warn(`[mpp] paid runs disabled: ${(e as Error).message}`)
+  }
+
+  return { cfg, db, sql, redis, rpc, providers, media, sessions, needsTls }
 }
 
 export type AppContext = ReturnType<typeof createContext>

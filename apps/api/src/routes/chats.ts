@@ -5,18 +5,17 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { buildContext, classifyByRules, classifyTask, estimateTokens, FREE_MODEL_ID, mediaPrompt, type TaskType } from '@smartrouter/core'
+import { classifyByRules, classifyTask, estimateTokens, FREE_MODEL_ID, type TaskType } from '@smartrouter/core'
 import { and, desc, eq, schema, sql } from '@smartrouter/db'
 import type { AppContext } from '../context.js'
 import { requireAuth, type AuthVars } from '../middleware/auth.js'
 import { AppError } from '../middleware/error.js'
 import { findModel, modelsFor, type CatalogModel } from '../services/catalog.js'
 import { createQuote, freeRemaining, rank, recommendOptions, type TaskInput } from '../services/quotes.js'
+import { turnInput } from '../services/turns.js'
 
 const TaskTypeZ = z.enum(['chat', 'writing', 'coding', 'research', 'translation', 'image', 'music'])
 const SliderZ = z.enum(['cheapest', 'balanced', 'best'])
-const SYSTEM_PROMPT = 'You are a helpful assistant inside SmartRouter. Answer in the language the user writes in. Be direct and concise unless asked for detail.'
-const HISTORY_LIMIT = 200
 
 export function chatRoutes(ctx: AppContext) {
   const app = new Hono<AuthVars>()
@@ -38,23 +37,6 @@ export function chatRoutes(ctx: AppContext) {
     return chat
   }
 
-  /** What the model would see for this turn, sized for that model's budget. */
-  async function turnInput(chat: typeof schema.chats.$inferSelect, prompt: string, model: CatalogModel | undefined, taskType: TaskType, complexity: 'short' | 'long'): Promise<TaskInput> {
-    if (taskType === 'image' || taskType === 'music') {
-      const p = mediaPrompt(prompt, chat.summary)
-      return { taskType, complexity, prompt: p, contextTokens: estimateTokens(p) }
-    }
-    const history = await ctx.db
-      .select({ seq: schema.messages.seq, role: schema.messages.role, content: schema.messages.content })
-      .from(schema.messages)
-      .where(and(eq(schema.messages.chatId, chat.id), eq(schema.messages.status, 'done')))
-      .orderBy(desc(schema.messages.seq))
-      .limit(HISTORY_LIMIT)
-    const budget = model?.payment === 'free' ? ctx.cfg.free.contextTokens : ctx.cfg.chat.contextTokens
-    const built = buildContext({ systemPrompt: SYSTEM_PROMPT, summary: chat.summary, summaryThroughSeq: chat.summaryThroughSeq, history: history.reverse(), prompt, budgetTokens: budget })
-    return { taskType, complexity, prompt, messages: built.messages, contextTokens: built.contextTokens }
-  }
-
   // ---- create ----
   app.post(
     '/chats',
@@ -70,7 +52,7 @@ export function chatRoutes(ctx: AppContext) {
       const [chat] = await ctx.db.insert(schema.chats).values({ userId: user.id, taskType, slider }).returning()
       // With a description we quote it as the first prompt so the user can run immediately.
       const input: TaskInput = b.description
-        ? await turnInput(chat!, b.description, undefined, taskType, complexity)
+        ? await turnInput(ctx, chat!, b.description, undefined, taskType, complexity)
         : { taskType, complexity, prompt: '', contextTokens: 400 }
       const { options, freeRemainingToday } = await recommendOptions(ctx, { userId: user.id, chatId: chat!.id, input, slider, withQuotes: Boolean(b.description) })
       // Default the chat to the top pick; the user's choice in /quote or PATCH overrides it.
@@ -146,7 +128,7 @@ export function chatRoutes(ctx: AppContext) {
     }
     if (!model) throw new AppError('PROVIDER_UNAVAILABLE', `No model available for ${taskType}`)
 
-    const input = await turnInput(chat, prompt, model, taskType, turn.complexity)
+    const input = await turnInput(ctx, chat, prompt, model, taskType, turn.complexity)
     const q = await createQuote(ctx, { userId: user.id, chatId: chat.id, model, input })
     if (model.id !== chat.currentModelId && !isMediaTurn) await ctx.db.update(schema.chats).set({ currentModelId: model.id }).where(eq(schema.chats.id, chat.id))
 

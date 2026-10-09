@@ -184,6 +184,7 @@ export const quotes = pgTable(
     modelId: text('model_id').notNull().references(() => models.id),
     promptHash: text('prompt_hash'), // /run must send the prompt that was quoted
     contextTokens: integer('context_tokens'), // history + prompt tokens priced into the quote
+    maxOutputTokens: integer('max_output_tokens'), // reply cap priced into the quote; /run uses the same
     priceMicro: micro('price_micro').notNull(), // what the user pays (0 for the free model)
     estCostMicro: micro('est_cost_micro').notNull(), // what we expect to pay the provider
     expiresAt: ts('expires_at').notNull(),
@@ -214,6 +215,8 @@ export const requests = pgTable(
     latencyMs: integer('latency_ms'),
     providerReceipt: jsonb('provider_receipt'),
     resultRef: text('result_ref'),
+    /** Text answer (also in the chat message); kept for compare runs and /requests polling. */
+    outputText: text('output_text'),
     errorCode: text('error_code'),
     createdAt: createdAt(),
     finishedAt: ts('finished_at'),
@@ -314,9 +317,12 @@ export const waitlist = pgTable(
   (t) => [uniqueIndex('waitlist_email_interest_idx').on(t.email, t.interest)],
 )
 
-/** Backs mppx's AtomicStore: update(key, fn) runs under SELECT … FOR UPDATE. Never Redis. */
+/**
+ * Backs mppx's AtomicStore (channel state, replay markers). update(key, fn) runs under a
+ * per-key advisory lock. value is mppx's bigint-aware JSON (ox Json), stored as text.
+ */
 export const sessionStore = pgTable('session_store', {
   key: text('key').primaryKey(),
-  value: jsonb('value').notNull(),
+  value: text('value').notNull(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 })

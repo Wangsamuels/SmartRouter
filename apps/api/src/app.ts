@@ -9,6 +9,8 @@ import { authRoutes } from './routes/auth.js'
 import { catalogRoutes } from './routes/catalog.js'
 import { chatRoutes } from './routes/chats.js'
 import { healthRoutes } from './routes/health.js'
+import { requestRoutes } from './routes/requests.js'
+import { runRoutes } from './routes/run.js'
 
 export function createApp(ctx: AppContext) {
   const app = new Hono()
@@ -21,7 +23,7 @@ export function createApp(ctx: AppContext) {
       // Credentials (the session cookie) require an explicit origin, never '*'.
       origin: (o) => (ctx.cfg.app.origins.includes(o) ? o : null),
       credentials: true,
-      allowHeaders: ['content-type', 'authorization', 'x-request-id'],
+      allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization'],
       exposeHeaders: ['Payment-Receipt', 'WWW-Authenticate', 'x-request-id'],
     }),
   )
@@ -31,7 +33,8 @@ export function createApp(ctx: AppContext) {
   app.route('/', authRoutes(ctx))
   app.route('/', catalogRoutes(ctx))
   app.route('/', chatRoutes(ctx))
-  // Step 6 mounts: /run, /requests, /sessions, /feedback, /compare
+  app.route('/', runRoutes(ctx))
+  app.route('/', requestRoutes(ctx))
 
   app.onError(onError)
   app.notFound(notFound)

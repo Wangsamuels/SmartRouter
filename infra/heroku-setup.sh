@@ -24,12 +24,14 @@ for app in smartrouter-testnet smartrouter-mainnet; do
     svc=${plan%%:*}; [[ " $have " == *" $svc "* ]] || { api POST "/apps/$app/addons" "{\"plan\":\"$plan\"}" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(" ", d.get("name") or d)'; }
   done
   secret=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
+  mppsecret=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
   cur=$(api GET "/apps/$app/config-vars")
-  vars=$(CUR="$cur" NETWORK="${NET[$app]}" SECRET="$secret" python3 -c '
+  vars=$(CUR="$cur" NETWORK="${NET[$app]}" SECRET="$secret" MPPSECRET="$mppsecret" python3 -c '
 import json,os
 cur=json.loads(os.environ["CUR"]); n=os.environ["NETWORK"]
 want={"TEMPO_NETWORK":n,"NODE_ENV":"production","MAX_PROVIDER_PRICE_MULTIPLIER":"2","FEE_PCT":"10","DEFAULT_ALLOCATION_USD":"2","NODE_MODULES_CACHE":"true"}
 if "SESSION_SECRET" not in cur: want["SESSION_SECRET"]=os.environ["SECRET"]
+if "MPP_SECRET_KEY" not in cur: want["MPP_SECRET_KEY"]=os.environ["MPPSECRET"]
 if n=="moderato": want.setdefault("FEE_PAYER_URL","https://sponsor.moderato.tempo.xyz")
 print(json.dumps({k:v for k,v in want.items() if cur.get(k)!=v}))')
   [ "$vars" != "{}" ] && api PATCH "/apps/$app/config-vars" "$vars" >/dev/null

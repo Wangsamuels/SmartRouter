@@ -11,6 +11,7 @@
   "env": {
     "TEMPO_NETWORK": { "value": "moderato" },
     "SESSION_SECRET": { "generator": "secret" },
+    "MPP_SECRET_KEY": { "generator": "secret" },
     "MAX_PROVIDER_PRICE_MULTIPLIER": { "value": "2" },
     "FEE_PCT": { "value": "10" },
     "DEFAULT_ALLOCATION_USD": { "value": "2" },
