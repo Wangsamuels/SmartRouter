@@ -22,8 +22,14 @@ export function invalidateCatalog() {
   cache = undefined
 }
 
+/** Providers failing ≥ half of recent health checks (worker job) sit out until they recover. */
+export const UNHEALTHY_ERROR_RATE = 0.5
+
 export async function modelsFor(ctx: AppContext, taskType: TaskType) {
-  return (await activeModels(ctx)).filter((m) => m.taskTypes.includes(taskType))
+  const all = (await activeModels(ctx)).filter((m) => m.taskTypes.includes(taskType))
+  const healthy = all.filter((m) => m.payment === 'free' || m.errorRate < UNHEALTHY_ERROR_RATE)
+  // If every paid model for the task looks unhealthy, health data is probably wrong: show them anyway.
+  return healthy.some((m) => m.payment !== 'free') ? healthy : all
 }
 
 export async function findModel(ctx: AppContext, id: string) {

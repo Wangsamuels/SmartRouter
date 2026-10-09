@@ -20,6 +20,7 @@ import { tempo as tempoChain, tempoModerato } from 'viem/chains'
 import type { Config } from '@smartrouter/config'
 import type { Db } from '@smartrouter/db'
 import { pgSessionStore } from './store.js'
+import { recordSettlement } from './settlement.js'
 
 /** The fields of mppx's persisted channel state that SmartRouter reads (ChannelStore.State). */
 export type ChannelState = {
@@ -37,6 +38,11 @@ export type ChannelState = {
   closeRequestedAt: bigint
   finalized: boolean
   createdAt: string
+  operator?: `0x${string}`
+  escrowContract?: `0x${string}`
+  descriptor?: Record<string, unknown>
+  highestVoucher?: { cumulativeAmount: bigint | string; signature: Hex } | null
+  lastSettlementAt?: string
 }
 
 /** mppx keys channel state by the lowercase channel id (ChannelStore.normalizeChannelId). */
@@ -81,6 +87,8 @@ export function createSessionServer(cfg: Config, db: Db) {
         suggestedDeposit: String(cfg.pricing.defaultAllocationUsd),
         ...(cfg.mpp.sponsorFees ? { feePayer: true as const } : {}),
         // No automatic settlement: the worker settles idle channels in batches (fewer txs).
+        // User-initiated closes still capture `spent` here; record them like the worker's.
+        onSessionSettlement: (e) => recordSettlement(db, cfg.tokens.payment, { channelId: e.channelId, txHash: e.txHash, kind: e.trigger === 'close' ? 'close' : 'settle', totalSettled: e.amount, delta: e.delta }),
       }),
     ],
   })

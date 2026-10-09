@@ -32,6 +32,7 @@ pnpm smoke:providers             # read every provider's live price (spends noth
 pnpm smoke:providers --pay --budget=2 --write   # one real paid call per model; marks working ones verified
 API_URL=http://localhost:3000 pnpm e2e:api      # sign in with a throwaway wallet and exercise chats/quotes
 API_URL=http://localhost:3000 pnpm testnet:session   # paid /run on Moderato: 402 → open session → SSE → voucher → top-up → close
+API_URL=… NETWORK=tempo PAYER_KEY_FILE=.test-user-wallet pnpm treasury:check   # proves spend reaches the treasury, rest returns to the user
 TEST_DATABASE_URL=postgres://… pnpm test         # also runs the Postgres session-store concurrency tests
 pnpm test                        # unit tests
 ```
@@ -51,6 +52,12 @@ channel management (open without content, top-up, close).
 Needs `TREASURY_ADDRESS` (payee), `OPERATOR_PRIVATE_KEY` (sends settle/close, sponsors open/top-up fees;
 falls back to the hot wallet) and `MPP_SECRET_KEY`. Without them only the free model runs.
 Channel state lives in Postgres (`session_store`), never Redis.
+
+Getting paid (worker `settle-sessions`, every 2 min): a channel quiet for `SETTLE_IDLE_MINUTES` that owes
+≥ `SETTLE_MIN_USD` is settled to the treasury; one unused for `IDLE_CLOSE_HOURS` (or whose user asked the
+chain to close) is closed by the operator — the treasury captures exactly what was spent and the user gets
+the rest back. Channels with refunded requests are only collected on close (the escrow can only settle a
+full voucher). Every settle/close is a `treasury_moves` row; `reconcile` checks them nightly.
 
 Schema change: edit `packages/db/src/schema.ts`, run `pnpm db:generate`, and commit the new file in `packages/db/migrations/`.
 

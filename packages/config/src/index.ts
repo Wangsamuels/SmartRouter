@@ -25,6 +25,15 @@ const EnvSchema = z.object({
   OPERATOR_PRIVATE_KEY: optionalStr.pipe(z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'must be a 0x-prefixed 32-byte hex key').optional()),
   /** Pay users' channel open/top-up fees from the operator wallet. */
   SPONSOR_FEES: z.enum(['true', 'false']).default('true'),
+  /** Settle a channel's unsettled spend once it has been quiet this long… */
+  SETTLE_IDLE_MINUTES: z.coerce.number().positive().default(10),
+  /** …and owes at least this much (USD). Idle close collects anything smaller. */
+  SETTLE_MIN_USD: z.coerce.number().nonnegative().default(0.05),
+  /** Close channels unused this long: treasury gets what was spent, the user gets the rest back. */
+  IDLE_CLOSE_HOURS: z.coerce.number().positive().default(24),
+  /** Alert thresholds (USD) for the wallets the server spends from. */
+  HOT_WALLET_MIN_USD: z.coerce.number().nonnegative().default(2),
+  OPERATOR_MIN_USD: z.coerce.number().nonnegative().default(0.25),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: optionalStr,
   SESSION_SECRET: z.string().min(32),
@@ -90,6 +99,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       secretKey: e.MPP_SECRET_KEY,
       operatorKey: (e.OPERATOR_PRIVATE_KEY ?? e.HOT_WALLET_PRIVATE_KEY) as `0x${string}` | undefined,
       sponsorFees: e.SPONSOR_FEES === 'true',
+      settleIdleMs: e.SETTLE_IDLE_MINUTES * 60_000,
+      settleMinMicro: BigInt(Math.round(e.SETTLE_MIN_USD * 1e6)),
+      idleCloseMs: e.IDLE_CLOSE_HOURS * 3_600_000,
+    },
+    alerts: {
+      hotWalletMinMicro: BigInt(Math.round(e.HOT_WALLET_MIN_USD * 1e6)),
+      operatorMinMicro: BigInt(Math.round(e.OPERATOR_MIN_USD * 1e6)),
     },
     /** Mainnet MPP providers can't be paid on testnet, so paid models run on the mock adapter. */
     mockProviders: e.MOCK_PROVIDERS === 'auto' ? e.TEMPO_NETWORK === 'moderato' : e.MOCK_PROVIDERS === 'true',

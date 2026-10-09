@@ -16,3 +16,4 @@ scripts/out/
 .smoke-run*.mjs
 .smoke-results.jsonl
 .operator-*
+.test-user-wallet

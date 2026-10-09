@@ -28,10 +28,10 @@ export function healthRoutes(ctx: AppContext) {
         const [chainId, block] = await Promise.all([ctx.rpc.getChainId(), ctx.rpc.getBlockNumber()])
         return { chainId, block }
       }),
-      // Provider health is written by the worker (step 7). Until then the catalog is empty.
+      // Health is written by the worker's provider-health job (models.error_rate).
       timed(async () => {
         const rows = await ctx.db.execute<{ total: number; healthy: number }>(
-          dsql`select count(*)::int as total, count(*) filter (where ${schema.models.active})::int as healthy from ${schema.models}`,
+          dsql`select count(*)::int as total, count(*) filter (where ${schema.models.errorRate} < 0.5)::int as healthy from ${schema.models} where ${schema.models.active}`,
         )
         return rows[0] ?? { total: 0, healthy: 0 }
       }),

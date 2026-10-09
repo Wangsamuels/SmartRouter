@@ -2,13 +2,17 @@ import type PgBoss from 'pg-boss'
 import type { Config } from '@smartrouter/config'
 import { buildCatalog, createProviderRuntime, writeCatalog, type MediaStore, type ProviderRuntime, type SessionServer } from '@smartrouter/core'
 import type { Db } from '@smartrouter/db'
+import { walletAlerts } from './alerts.js'
+import { cleanup } from './cleanup.js'
+import { providerHealth } from './health.js'
 import { pollMediaJobs } from './media.js'
+import { reconcile } from './reconcile.js'
+import { settleSessions } from './settlement.js'
+import { summariseChats } from './summaries.js'
 
 /**
  * Job registry. Each entry: queue name, cron (UTC), handler.
- * Step 7 adds: settle-user-sessions (every 5 min), close-idle-sessions (15 min),
- * provider-health (5 min), hot-wallet-alert (15 min), treasury-swap (daily),
- * reconciliation (03:00 UTC).
+ * All crons are UTC. pg-boss runs each job once across dynos.
  */
 export type JobDeps = { cfg: Config; db: Db; boss: PgBoss; runtime: ProviderRuntime; sessions?: SessionServer; media: MediaStore }
 export type JobDef = { name: string; cron: string; handler: (deps: JobDeps) => Promise<void> }
@@ -31,4 +35,10 @@ export const jobs: JobDef[] = [
   },
   { name: 'catalog-refresh', cron: '0 2 * * *', handler: refreshCatalog },
   { name: 'media-jobs', cron: '* * * * *', handler: pollMediaJobs },
+  { name: 'settle-sessions', cron: '*/2 * * * *', handler: settleSessions },
+  { name: 'provider-health', cron: '*/5 * * * *', handler: providerHealth },
+  { name: 'chat-summaries', cron: '*/10 * * * *', handler: summariseChats },
+  { name: 'wallet-alerts', cron: '*/15 * * * *', handler: walletAlerts },
+  { name: 'reconcile', cron: '15 3 * * *', handler: reconcile },
+  { name: 'cleanup', cron: '7 * * * *', handler: cleanup },
 ]
