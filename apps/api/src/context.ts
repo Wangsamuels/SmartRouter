@@ -1,8 +1,8 @@
 import { Redis } from 'ioredis'
-import { createPublicClient, http } from 'viem'
+import { createPublicClient } from 'viem'
 import { tempo, tempoModerato } from 'viem/chains'
 import { config, needsTls } from '@smartrouter/config'
-import { createMediaStore, createProviderRuntime, createSessionServer, type SessionServer } from '@smartrouter/core'
+import { createMediaStore, createProviderRuntime, createSessionServer, tempoTransport, type SessionServer } from '@smartrouter/core'
 import { createDb } from '@smartrouter/db'
 
 /** Process-wide singletons. No request state lives here (dynos restart daily). */
@@ -24,7 +24,7 @@ export function createContext() {
 
   // Chain-aware client: verifies Tempo passkey signature envelopes as well as plain EOA signatures.
   const chain = cfg.network.name === 'tempo' ? tempo : tempoModerato
-  const rpc = createPublicClient({ chain, transport: http(cfg.network.rpcUrl, { timeout: 5_000, retryCount: 1 }) })
+  const rpc = createPublicClient({ chain, transport: tempoTransport(cfg, { timeoutMs: 5_000, retryCount: 2 }) })
 
   const providers = createProviderRuntime(cfg, { db })
   const media = createMediaStore(cfg)

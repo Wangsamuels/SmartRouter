@@ -1,0 +1,13 @@
+/**
+ * Tempo RPC transport: primary endpoint first, public backups after it. Each endpoint batches
+ * calls and backs off on rate limits ("Request exceeds defined limit"); if it keeps failing,
+ * viem's fallback moves to the next one.
+ */
+import { fallback, http, type Transport } from 'viem'
+import type { Config } from '@smartrouter/config'
+
+export function tempoTransport(cfg: Config, opts: { timeoutMs?: number; retryCount?: number } = {}): Transport {
+  const one = (url: string) => http(url, { timeout: opts.timeoutMs ?? 15_000, retryCount: opts.retryCount ?? 4, retryDelay: 250, batch: { wait: 10 } })
+  const urls = cfg.network.rpcUrls
+  return urls.length === 1 ? one(urls[0]!) : fallback(urls.map(one), { rank: false, retryCount: 1 })
+}

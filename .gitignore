@@ -17,3 +17,5 @@ scripts/out/
 .smoke-results.jsonl
 .operator-*
 .test-user-wallet
+dump.rdb
+.rpc-*

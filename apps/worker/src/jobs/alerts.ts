@@ -6,7 +6,7 @@
 import { createPublicClient, erc20Abi, http, type Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { tempo, tempoModerato } from 'viem/chains'
-import { alert, pgSpendLimiter } from '@smartrouter/core'
+import { alert, pgSpendLimiter, tempoTransport } from '@smartrouter/core'
 import type { JobDeps } from './index.js'
 
 const USDCE = '0x20c000000000000000000000b9537d11c60e8b50' as const
@@ -25,7 +25,7 @@ export async function walletAlerts({ cfg, db, sessions }: JobDeps) {
   }
   if (sessions) {
     const chain = cfg.network.name === 'tempo' ? tempo : tempoModerato
-    const bal = await balance(chain, cfg.network.rpcUrl, cfg.tokens.payment, sessions.operator.address)
+    const bal = await createPublicClient({ chain, transport: tempoTransport(cfg) }).readContract({ address: cfg.tokens.payment, abi: erc20Abi, functionName: 'balanceOf', args: [sessions.operator.address] })
     if (bal < cfg.alerts.operatorMinMicro) alert(`operator ${sessions.operator.address} low: $${usd(bal)} (min $${usd(cfg.alerts.operatorMinMicro)}) — settlement and sponsored fees need it`)
   }
 }

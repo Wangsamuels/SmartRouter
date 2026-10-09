@@ -14,13 +14,14 @@
  * voucher) never take money for a failed result.
  */
 import { Mppx, tempo } from 'mppx/server'
-import { createClient, http, type Hex } from 'viem'
+import { createClient, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { tempo as tempoChain, tempoModerato } from 'viem/chains'
 import type { Config } from '@smartrouter/config'
 import type { Db } from '@smartrouter/db'
 import { pgSessionStore } from './store.js'
 import { recordSettlement } from './settlement.js'
+import { tempoTransport } from '../rpc.js'
 
 /** The fields of mppx's persisted channel state that SmartRouter reads (ChannelStore.State). */
 export type ChannelState = {
@@ -67,7 +68,13 @@ export function createSessionServer(cfg: Config, db: Db) {
 
   const operator = privateKeyToAccount(cfg.mpp.operatorKey)
   const chain = cfg.network.name === 'tempo' ? tempoChain : tempoModerato
-  const client = createClient({ chain, account: operator, transport: http(cfg.network.rpcUrl, { timeout: 15_000, retryCount: 2 }) })
+  // Public Tempo RPCs rate-limit bursts ("Request exceeds defined limit"); batch calls and back
+  // off instead of failing a payment. Production should set a dedicated TEMPO_RPC_URL.
+  const client = createClient({
+    chain,
+    account: operator,
+    transport: tempoTransport(cfg),
+  })
   const store = pgSessionStore(db, { keyPrefix: `mpp:${cfg.network.chainId}:` })
 
   const mppx = Mppx.create({

@@ -10,7 +10,10 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   TEMPO_NETWORK: z.enum(['moderato', 'tempo']).default('moderato'),
+  /** Primary RPC (e.g. your dRPC key URL). Defaults to the network's public RPC. */
   TEMPO_RPC_URL: optionalStr,
+  /** Comma-separated backup RPCs; defaults to the public endpoints for the network. */
+  TEMPO_RPC_FALLBACK_URLS: optionalStr,
   PAYMENT_TOKEN: optionalStr.pipe(address.optional()),
   TREASURY_ADDRESS: optionalStr.pipe(address.optional()),
   /** Hot wallet that pays providers: a dedicated EOA holding only a few days of float. */
@@ -89,6 +92,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       label: network.name,
       chainId: network.chainId,
       rpcUrl: e.TEMPO_RPC_URL ?? network.rpcUrl,
+      /** Primary first, then backups; duplicates removed. */
+      rpcUrls: [
+        ...new Set([
+          e.TEMPO_RPC_URL ?? network.rpcUrl,
+          ...(e.TEMPO_RPC_FALLBACK_URLS ? e.TEMPO_RPC_FALLBACK_URLS.split(',').map((u) => u.trim()).filter(Boolean) : [network.rpcUrl, ...network.fallbackRpcUrls]),
+        ]),
+      ] as string[],
       explorer: network.explorer,
       feePayerUrl: e.FEE_PAYER_URL ?? network.feePayerUrl,
     },
