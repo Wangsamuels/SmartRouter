@@ -4,6 +4,7 @@ import { tempo, tempoModerato } from 'viem/chains'
 import { config, needsTls } from '@smartrouter/config'
 import { createMediaStore, createProviderRuntime, createSessionServer, tempoTransport, type SessionServer } from '@smartrouter/core'
 import { createDb } from '@smartrouter/db'
+import { createPrivyVerifier } from './services/privy.js'
 
 /** Process-wide singletons. No request state lives here (dynos restart daily). */
 export function createContext() {
@@ -37,7 +38,9 @@ export function createContext() {
     console.warn(`[mpp] paid runs disabled: ${(e as Error).message}`)
   }
 
-  return { cfg, db, sql, redis, rpc, providers, media, sessions, needsTls }
+  const privy = cfg.privy.appId ? createPrivyVerifier(cfg.privy.appId) : undefined
+
+  return { cfg, db, sql, redis, rpc, providers, media, sessions, privy, needsTls }
 }
 
 export type AppContext = ReturnType<typeof createContext>

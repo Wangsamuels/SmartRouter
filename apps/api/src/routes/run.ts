@@ -24,6 +24,7 @@ import { freeRemaining, freeSpentToday, promptHash, type TaskInput } from '../se
 import { runAndStream, SSE_HEADERS, sseStream, type RunArgs } from '../services/runner.js'
 import { concurrency } from '../middleware/rate-limit.js'
 import { SYSTEM_PROMPT, turnInput, type ChatRow } from '../services/turns.js'
+import { usageFor, weeklySpentMicro } from '../services/usage.js'
 
 const RunBody = z.object({
   quoteId: z.string().uuid(),
@@ -246,19 +247,7 @@ export function runRoutes(ctx: AppContext) {
     })
   }
 
-  async function weeklySpent(userId: string): Promise<bigint> {
-    const [row] = await ctx.db
-      .select({ total: sql<string>`coalesce(sum(${schema.requests.priceMicro}),0)::text` })
-      .from(schema.requests)
-      .where(
-        and(
-          eq(schema.requests.userId, userId),
-          sql`${schema.requests.status} in ('pending','running','succeeded')`,
-          sql`${schema.requests.createdAt} > now() - interval '7 days'`,
-        ),
-      )
-    return BigInt(row?.total ?? '0')
-  }
+
 
   type Slot = { release: () => Promise<void>; handedOff: boolean }
   const runSlots = concurrency(ctx.redis, { max: MAX_CONCURRENT_RUNS, ttlMs: 10 * 60_000 })
@@ -356,7 +345,7 @@ export function runRoutes(ctx: AppContext) {
 
       // ----- paid model -----
       if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured on this server')
-      if ((await weeklySpent(user.id)) + quote.priceMicro > user.weeklyLimitMicro)
+      if ((await weeklySpentMicro(ctx, user.id)) + quote.priceMicro > user.weeklyLimitMicro)
         throw new AppError(
           'ALLOCATION_EXHAUSTED',
           `This would pass your weekly limit of $${usd(user.weeklyLimitMicro).toFixed(2)}. Raise it in settings or continue free.`,
@@ -402,6 +391,7 @@ export function runRoutes(ctx: AppContext) {
           userMessageId: req.userMessageId,
           assistantMessageId: req.assistantMessageId,
           remainingUsd: usd(channelRemaining(state)),
+          usage: await usageFor(ctx, user),
         },
         slot,
       )
@@ -424,6 +414,7 @@ export function runRoutes(ctx: AppContext) {
         operator: ctx.sessions?.operator.address,
       },
       suggestedDepositUsd: Math.max(ctx.cfg.pricing.defaultAllocationUsd, usd(user.allocationMicro)),
+      usage: await usageFor(ctx, user, open ?? null),
       session: open
         ? {
             channelId: open.row.channelId,

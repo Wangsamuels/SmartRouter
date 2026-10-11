@@ -26,7 +26,7 @@ export function createApp(ctx: AppContext) {
       // Credentials (the session cookie) require an explicit origin, never '*'.
       origin: (o) => (ctx.cfg.app.origins.includes(o) ? o : null),
       credentials: true,
-      allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization'],
+      allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization', 'x-session-token', 'privy-id-token'],
       exposeHeaders: ['Payment-Receipt', 'WWW-Authenticate', 'x-request-id', 'Retry-After'],
     }),
   )

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { estimateTokens, FREE_MODEL_ID, classifyTask } from '@smartrouter/core'
 import { schema } from '@smartrouter/db'
 import type { AppContext } from '../context.js'
-import { requireAuth, type AuthVars } from '../middleware/auth.js'
+import { optionalAuth, type AuthVars } from '../middleware/auth.js'
 import { activeModels, findModel, publicModel } from '../services/catalog.js'
 import { recommendOptions } from '../services/quotes.js'
 
@@ -22,20 +22,23 @@ export function catalogRoutes(ctx: AppContext) {
     })
   })
 
-  /** One-off recommendation without a chat (chats use POST /chats and /chats/:id/quote). */
+  /**
+   * One-off recommendation without a chat (chats use POST /chats and /chats/:id/quote).
+   * Works for guests too (the chat screen before sign-in): estimated prices, no quotes.
+   */
   app.post(
     '/recommend',
-    requireAuth(ctx),
+    optionalAuth(ctx),
     zValidator('json', z.object({ prompt: z.string().min(1).max(8_000), slider: z.enum(['cheapest', 'balanced', 'best']).optional(), taskType: TaskTypeZ.optional() })),
     async (c) => {
-      const user = c.get('user')
+      const user = c.get('user') as AuthVars['Variables']['user'] | undefined
       const b = c.req.valid('json')
       const free = await findModel(ctx, FREE_MODEL_ID)
       const cls = await classifyTask(b.prompt, free ? { adapter: ctx.providers.adapterFor(free.ref), model: free.ref } : undefined)
       const taskType = b.taskType ?? cls.taskType
       const input = { taskType, complexity: cls.complexity, prompt: b.prompt, contextTokens: estimateTokens(b.prompt) + 10 }
-      const { options, freeRemainingToday } = await recommendOptions(ctx, { userId: user.id, input, slider: b.slider ?? user.slider, withQuotes: true })
-      return c.json({ taskType, complexity: cls.complexity, classifiedBy: cls.source, options, freeRemainingToday })
+      const { options, freeRemainingToday } = await recommendOptions(ctx, { userId: user?.id, input, slider: b.slider ?? user?.slider ?? 'balanced', withQuotes: Boolean(user) })
+      return c.json({ taskType, complexity: cls.complexity, classifiedBy: cls.source, options, freeRemainingToday, guest: !user })
     },
   )
 

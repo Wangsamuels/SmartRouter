@@ -42,6 +42,8 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: optionalStr,
   SESSION_SECRET: z.string().min(32),
+  /** Privy app id (public): sign-in with email / Google, embedded Tempo wallets. */
+  PRIVY_APP_ID: optionalStr,
   S3_ENDPOINT: optionalStr,
   S3_BUCKET: optionalStr,
   S3_ACCESS_KEY_ID: optionalStr,
@@ -134,6 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     db: { url: e.DATABASE_URL },
     redis: { url: e.REDIS_URL },
     sessionSecret: e.SESSION_SECRET,
+    privy: { appId: e.PRIVY_APP_ID },
     s3: {
       endpoint: e.S3_ENDPOINT,
       bucket: e.S3_BUCKET,

@@ -43,6 +43,10 @@ export const waitlistInterestEnum = pgEnum('waitlist_interest', ['naira', 'credi
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   tempoAddress: text('tempo_address').notNull().unique(), // lowercase 0x…
+  /** Privy user id (did:privy:…) when the user signed in with email / Google through Privy. */
+  privyDid: text('privy_did').unique(),
+  email: text('email'), // verified by Privy (email OTP or Google)
+  loginMethod: text('login_method'), // 'email' | 'google' | 'wallet'
   country: text('country'),
   slider: sliderEnum('slider').notNull().default('balanced'),
   allocationMicro: micro('allocation_micro').notNull().default(sql`2000000`),

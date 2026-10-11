@@ -29,6 +29,7 @@ import { eq, schema } from '@smartrouter/db'
 import type { AppContext } from '../context.js'
 import { findModel, type CatalogModel } from './catalog.js'
 import { freeRemaining, rank, toTask, type TaskInput } from './quotes.js'
+import { usageFor } from './usage.js'
 
 const RUN_TIMEOUT_MS = 150_000
 const INLINE_JOB_WAIT_MS = 100_000
@@ -77,6 +78,16 @@ export const SSE_HEADERS = {
 }
 
 const usd = (micro: bigint) => Number(micro) / 1e6
+
+/** Meters after this run, for the usage banner (never fails the run). */
+async function usageAfter(ctx: AppContext, userId: string) {
+  try {
+    const [u] = await ctx.db.select({ id: schema.users.id, weeklyLimitMicro: schema.users.weeklyLimitMicro }).from(schema.users).where(eq(schema.users.id, userId))
+    return u ? await usageFor(ctx, u) : undefined
+  } catch {
+    return undefined
+  }
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export type RunArgs = {
@@ -198,6 +209,7 @@ export async function runAndStream(ctx: AppContext, a: RunArgs): Promise<void> {
       ...(out.citations?.length ? { citations: out.citations } : {}),
       chargedUsd: usd(req.priceMicro),
       latencyMs: fin.latencyMs,
+      usage: await usageAfter(ctx, req.userId),
     })
   } catch (e) {
     const err = e as ProviderError

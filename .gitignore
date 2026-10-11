@@ -19,3 +19,4 @@ scripts/out/
 .test-user-wallet
 dump.rdb
 .rpc-*
+.privy

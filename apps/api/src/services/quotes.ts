@@ -141,7 +141,7 @@ export async function createQuote(
 /** Top 3 paid options with exact quotes, plus the free option when the task allows it. */
 export async function recommendOptions(
   ctx: AppContext,
-  args: { userId: string; chatId?: string; input: TaskInput; slider: Slider; withQuotes: boolean },
+  args: { userId?: string; chatId?: string; input: TaskInput; slider: Slider; withQuotes: boolean },
 ): Promise<{ options: Option[]; freeRemainingToday?: number }> {
   const { ranked, free } = await rank(ctx, args.input, args.slider, args.userId)
   // Top two by score, plus the best-quality model so the user always sees the premium option
@@ -154,14 +154,14 @@ export async function recommendOptions(
     top.map(async (s) => {
       if (!args.withQuotes)
         return { quoteId: null, modelId: s.id, label: s.label, provider: s.model.provider, priceUsd: Number(s.priceMicro) / 1e6, priceSource: 'estimate' as const, speed: s.speedLabel, reason: s.reason, free: false, score: round(s.score) }
-      const q = await createQuote(ctx, { userId: args.userId, chatId: args.chatId, model: s.model, input: args.input })
+      const q = await createQuote(ctx, { userId: args.userId!, chatId: args.chatId, model: s.model, input: args.input })
       return { quoteId: q.id, modelId: s.id, label: s.label, provider: s.model.provider, priceUsd: Number(q.priceMicro) / 1e6, priceSource: q.source, speed: s.speedLabel, reason: s.reason, free: false, score: round(s.score) }
     }),
   )
   let freeRemainingToday: number | undefined
   if (free) {
-    freeRemainingToday = await freeRemaining(ctx, args.userId)
-    const q = args.withQuotes ? await createQuote(ctx, { userId: args.userId, chatId: args.chatId, model: free, input: args.input }) : undefined
+    freeRemainingToday = args.userId ? await freeRemaining(ctx, args.userId) : ctx.cfg.free.dailyMessages
+    const q = args.withQuotes ? await createQuote(ctx, { userId: args.userId!, chatId: args.chatId, model: free, input: args.input }) : undefined
     options.push({ quoteId: q?.id ?? null, modelId: free.id, label: free.label, provider: free.provider, priceUsd: 0, priceSource: 'free', speed: 'Fast', reason: `Free · ${freeRemainingToday} messages left today`, free: true })
   }
   return { options, freeRemainingToday }

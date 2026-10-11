@@ -12,6 +12,7 @@ import { and, eq, schema, sql } from '@smartrouter/db'
 import type { AppContext } from '../context.js'
 import { endSession, requireAuth, startSession, type AuthVars } from '../middleware/auth.js'
 import { AppError } from '../middleware/error.js'
+import { usageFor } from '../services/usage.js'
 
 const NONCE_TTL_MS = 10 * 60_000
 const Address = z.string().regex(/^0x[0-9a-fA-F]{40}$/)
@@ -65,8 +66,48 @@ export function authRoutes(ctx: AppContext) {
       .values({ tempoAddress: address, allocationMicro: BigInt(Math.round(ctx.cfg.pricing.defaultAllocationUsd * 1e6)) })
       .onConflictDoUpdate({ target: schema.users.tempoAddress, set: { tempoAddress: address } })
       .returning()
-    await startSession(c, ctx, user!.id)
-    return c.json({ userId: user!.id, address })
+    const session = await startSession(c, ctx, user!.id)
+    return c.json({ userId: user!.id, address, ...session })
+  })
+
+  /**
+   * Sign in with Privy (email code or Google). Body or `privy-id-token` header: Privy's
+   * identity token. Creates the user on first sign-in (linked to their Privy id, verified email
+   * and embedded Tempo wallet), finds them afterwards — same login on any device = same user,
+   * same wallet, same chats. Returns a session token for the X-Session-Token header + a cookie.
+   */
+  app.post('/auth/privy', async (c) => {
+    if (!ctx.privy) throw new AppError('PROVIDER_UNAVAILABLE', 'Privy sign-in is not configured on this server')
+    const body = (await c.req.json().catch(() => ({}))) as { identityToken?: string }
+    const token = body.identityToken ?? c.req.header('privy-id-token')
+    if (!token) throw new AppError('VALIDATION_FAILED', 'Send { identityToken } from Privy')
+    let id
+    try {
+      id = await ctx.privy(token)
+    } catch (e) {
+      throw new AppError('UNAUTHENTICATED', `Privy token rejected: ${(e as Error).message}`)
+    }
+    if (!id.walletAddress) throw new AppError('VALIDATION_FAILED', 'No Privy embedded wallet yet — create it on login (embeddedWallets.ethereum.createOnLogin) and retry')
+    const allocationMicro = BigInt(Math.round(ctx.cfg.pricing.defaultAllocationUsd * 1e6))
+    const profile = { email: id.email ?? null, loginMethod: id.loginMethod }
+
+    const user = await ctx.db.transaction(async (tx) => {
+      const [byDid] = await tx.select().from(schema.users).where(eq(schema.users.privyDid, id.did)).for('update')
+      if (byDid) {
+        const [u] = await tx.update(schema.users).set(profile).where(eq(schema.users.id, byDid.id)).returning()
+        return u!
+      }
+      const [byWallet] = await tx.select().from(schema.users).where(eq(schema.users.tempoAddress, id.walletAddress!)).for('update')
+      if (byWallet) {
+        if (byWallet.privyDid && byWallet.privyDid !== id.did) throw new AppError('FORBIDDEN', 'This wallet belongs to another account')
+        const [u] = await tx.update(schema.users).set({ privyDid: id.did, ...profile }).where(eq(schema.users.id, byWallet.id)).returning()
+        return u!
+      }
+      const [u] = await tx.insert(schema.users).values({ tempoAddress: id.walletAddress!, privyDid: id.did, allocationMicro, ...profile }).returning()
+      return u!
+    })
+    const session = await startSession(c, ctx, user.id)
+    return c.json({ userId: user.id, address: user.tempoAddress, email: user.email, loginMethod: user.loginMethod, ...session })
   })
 
   app.post('/auth/logout', (c) => {
@@ -87,7 +128,10 @@ export function authRoutes(ctx: AppContext) {
     return c.json({
       id: u.id,
       address: u.tempoAddress,
+      email: u.email,
+      loginMethod: u.loginMethod ?? 'wallet',
       country: u.country,
+      usage: await usageFor(ctx, u),
       settings: { slider: u.slider, allocationUsd: Number(u.allocationMicro) / 1e6, weeklyLimitUsd: Number(u.weeklyLimitMicro) / 1e6, autoFreeFallback: u.autoFreeFallback },
       allocation: session
         ? { channelId: session.channelId, depositUsd: Number(session.depositMicro) / 1e6, usedUsd: Number(used) / 1e6, remainingUsd: Number(session.depositMicro - used) / 1e6 }
