@@ -126,7 +126,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     mockProviders: e.MOCK_PROVIDERS === 'auto' ? e.TEMPO_NETWORK === 'moderato' : e.MOCK_PROVIDERS === 'true',
     mockFirstTokenMs: e.MOCK_FIRST_TOKEN_MS,
     app: {
-      origins: e.APP_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
+      // Normalised to scheme://host[:port] so 'https://app.example.com/' (trailing slash) still matches the browser's Origin.
+      origins: e.APP_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean).map((o) => new URL(o).origin),
       /** Hosts a SIWE message may name as its domain. */
       siweDomains: e.APP_ORIGINS.split(',').map((o) => new URL(o.trim()).host),
     },
