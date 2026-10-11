@@ -10,14 +10,17 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { createClient, encodeFunctionData, erc20Abi, http, isAddress, type Hex } from 'viem'
 import { tempo as tempoChain, tempoModerato } from 'viem/chains'
-import { Relay } from 'viem/tempo'
-import { microToBase, relayFeeUsd, RelayError, TEMPO_CHAIN_ID, baseToMicro } from '@smartrouter/core'
+import { Actions, Addresses, Relay } from 'viem/tempo'
+import { microToBase, relayFeeUsd, RelayError, TEMPO_CHAIN_ID, baseToMicro, closeChannel } from '@smartrouter/core'
 import { and, desc, eq, gte, inArray, schema, sql } from '@smartrouter/db'
 import type { AppContext } from '../context.js'
 import { requireAuth, type AuthVars } from '../middleware/auth.js'
 import { AppError } from '../middleware/error.js'
-import { openChannel } from '../services/usage.js'
+import { openChannel, usageFor } from '../services/usage.js'
 import { APPROVE_SELECTOR, TRANSFER_SELECTOR, TRANSFER_WITH_MEMO_SELECTOR, chainOptions, findOption, micro, relay, tokenBalance, usd, validAddress } from '../services/wallet.js'
+
+/** Tempo's TIP-1034 payment-channel precompile (where mppx deposits go). */
+const ESCROW_PRECOMPILE = '0x4d50500000000000000000000000000000000000'
 
 /** Deposit addresses are created from a quote for this amount; any amount can be sent later. */
 const DEPOSIT_QUOTE_MICRO = 10_000_000n
@@ -77,6 +80,7 @@ export function walletRoutes(ctx: AppContext) {
       sponsoredToday(user.id),
       chainOptions(ctx),
     ])
+    const [caps, key] = await Promise.all([usageFor(ctx, user, open ?? null, { mainBalanceMicro: balance }), spendingKeyState(user)])
     return c.json({
       address,
       network: {
@@ -93,6 +97,10 @@ export function walletRoutes(ctx: AppContext) {
             remainingUsd: usd(open.state.deposit - open.state.spent),
           }
         : null,
+      // Same object as `ai`, named for the UI: money locked for answers, moved in and out automatically.
+      locked: open ? { depositUsd: usd(open.state.deposit), spentUsd: usd(open.state.spent), remainingUsd: usd(open.state.deposit - open.state.spent) } : null,
+      caps,
+      spendingKey: key,
       incomingUsd: usd(BigInt(pending[0]?.total ?? '0')),
       networkFees: {
         paidBy: 'smartrouter',
@@ -470,6 +478,72 @@ export function walletRoutes(ctx: AppContext) {
   )
 
   // ---------- POST /relay: the operator pays the network fee for the user's own transactions ----------
+  // ---------- spending key (Tempo access key with an on-chain daily limit) ----------
+  /** On-chain state of the user's spending key, plus what the frontend should authorize. */
+  async function spendingKeyState(user: { tempoAddress: string; dailyLimitMicro: bigint; spendingKeyAddress: string | null; spendingKeyExpiresAt: Date | null }) {
+    const limitMicro = user.dailyLimitMicro + ctx.cfg.pricing.depositChunkMicro
+    const setup = {
+      token,
+      limitUsd: usd(limitMicro),
+      periodSeconds: 86_400,
+      expiryDays: ctx.cfg.pricing.spendingKeyDays,
+      // The key may only call Tempo's payment-channel precompile: a stolen key can't transfer
+      // tokens to anyone or touch any other contract (tested: direct transfers → CallNotAllowed).
+      scopes: [{ address: ESCROW_PRECOMPILE }],
+    }
+    if (!user.spendingKeyAddress) return { status: 'missing' as const, setup }
+    try {
+      const [meta, left] = await Promise.all([
+        Actions.accessKey.getMetadata(ctx.rpc as never, { account: user.tempoAddress as `0x${string}`, accessKey: user.spendingKeyAddress as `0x${string}` }),
+        Actions.accessKey.getRemainingLimit(ctx.rpc as never, { account: user.tempoAddress as `0x${string}`, accessKey: user.spendingKeyAddress as `0x${string}`, token }),
+      ])
+      const expired = Number(meta.expiry) * 1000 < Date.now() + 86_400_000 // renew a day early
+      const status = meta.isRevoked ? 'revoked' : expired ? 'expiring' : 'active'
+      return {
+        status,
+        address: user.spendingKeyAddress,
+        expiresAt: new Date(Number(meta.expiry) * 1000).toISOString(),
+        onChain: { remainingTodayUsd: usd(left.remaining), periodEndsAt: left.periodEnd ? new Date(Number(left.periodEnd) * 1000).toISOString() : null },
+        setup,
+      }
+    } catch (e) {
+      console.warn('[wallet] spending key read failed:', (e as Error).message)
+      return { status: 'unknown' as const, address: user.spendingKeyAddress, setup }
+    }
+  }
+
+  app.post('/wallet/spending-key', zValidator('json', z.object({ accessKeyAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/) })), async (c) => {
+    const user = c.get('user')
+    const key = c.req.valid('json').accessKeyAddress.toLowerCase() as `0x${string}`
+    const account = user.tempoAddress as `0x${string}`
+    const meta = await Actions.accessKey.getMetadata(ctx.rpc as never, { account, accessKey: key }).catch(() => undefined)
+    if (!meta || meta.isRevoked || Number(meta.expiry) * 1000 < Date.now()) throw new AppError('VALIDATION_FAILED', 'That spending key is not authorized on your wallet (or has expired)')
+    if (meta.spendPolicy !== 'limited') throw new AppError('VALIDATION_FAILED', 'The spending key must have a daily limit')
+    const expiresAt = new Date(Number(meta.expiry) * 1000)
+    await ctx.db.update(schema.users).set({ spendingKeyAddress: key, spendingKeyExpiresAt: expiresAt }).where(eq(schema.users.id, user.id))
+    return c.json(await spendingKeyState({ ...user, spendingKeyAddress: key, spendingKeyExpiresAt: expiresAt }))
+  })
+
+  // ---------- return locked money now (instead of waiting for the idle close) ----------
+  app.post('/wallet/locked/return', async (c) => {
+    const user = c.get('user')
+    if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured')
+    const rows = await ctx.db.select().from(schema.userSessions).where(and(eq(schema.userSessions.userId, user.id), eq(schema.userSessions.status, 'open')))
+    let returned = 0n
+    const skipped: string[] = []
+    for (const r of rows) {
+      const busy = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(schema.requests).where(and(eq(schema.requests.channelId, r.channelId), sql`${schema.requests.status} in ('pending','running')`))
+      if (busy[0]?.n) {
+        skipped.push(`${r.channelId}: an answer is still running`)
+        continue
+      }
+      const out = await closeChannel(ctx.sessions, ctx.db, token, r.channelId)
+      if (out.refunded !== undefined) returned += out.refunded
+      else if (out.skipped) skipped.push(`${r.channelId}: ${out.skipped}`)
+    }
+    return c.json({ returnedUsd: usd(returned), skipped })
+  })
+
   app.post('/relay', async (c) => {
     const user = c.get('user')
     const body = (await c.req.json().catch(() => null)) as { method?: string; id?: unknown; jsonrpc?: string } | unknown[] | null
@@ -502,12 +576,18 @@ export function walletRoutes(ctx: AppContext) {
             }
             if (r.from?.toLowerCase() !== userAddr) return false
             const calls = r.calls?.length ? r.calls : r.to ? [{ to: r.to, data: r.data }] : []
+            // Authorizing the spending key: a transaction that carries a key authorization and only an
+            // empty call (viem sends one to the zero address).
+            const noop = (x: { to?: string; data?: string }) => /^0x0{40}$/i.test(x.to ?? '') && (!x.data || x.data === '0x')
+            if ((req as { keyAuthorization?: unknown }).keyAuthorization && calls.every(noop))
+              return (await sponsoredToday(user.id)) < ctx.cfg.wallet.sponsorTxPerDay
             if (!calls.length) return false
             if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay) return 'spend_limit_exceeded'
             const targets = await allowedTargets(user.id)
             return calls.every((call) => {
               const to = call.to?.toLowerCase()
               if (!to) return false
+              if (to === Addresses.accountKeychain.toLowerCase()) return true // update the key's limit, or revoke it
               if (to === token.toLowerCase()) {
                 const sel = call.data?.slice(0, 10).toLowerCase()
                 return sel === TRANSFER_SELECTOR || sel === TRANSFER_WITH_MEMO_SELECTOR || sel === APPROVE_SELECTOR

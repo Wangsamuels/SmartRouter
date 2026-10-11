@@ -1,6 +1,7 @@
 /**
  * Ranks candidate models for one task:
  *   score = Q·w_q + (1 − P)·w_p + S·w_s + taste (≤ 0.1) [+ web bonus for research]
+ * On cheapest/balanced, models under QUALITY_FLOOR of the best quality rank after the rest.
  * Q: leaderboard quality for this task type, rescaled across the candidates (best = 1) so
  *    all three dimensions span the same range and the slider means what it says
  * P: estimated price for this task, log-normalised so the cheapest = 0 and the dearest = 1
@@ -14,8 +15,12 @@ export type Slider = 'cheapest' | 'balanced' | 'best'
 export const WEIGHTS: Record<Slider, { q: number; p: number; s: number }> = {
   cheapest: { q: 0.2, p: 0.7, s: 0.1 },
   balanced: { q: 0.45, p: 0.4, s: 0.15 },
-  best: { q: 0.8, p: 0.1, s: 0.1 },
+  // "Best" means the strongest model for the task; price and speed only break near-ties.
+  best: { q: 0.92, p: 0.04, s: 0.04 },
 }
+
+/** Cheapest/balanced never lead with a model far below the field: under this share of the best quality for the task, it ranks after the rest. */
+export const QUALITY_FLOOR = 0.6
 
 export const TASTE_MAX = 0.1
 export const WEB_RESEARCH_BONUS = 0.1
@@ -51,7 +56,9 @@ export function rankModels(cands: Candidate[], opts: { taskType: TaskType; slide
     const score = q * w.q + (1 - p) * w.p + s * w.s + taste + web
     return { ...c, score, parts: { q, p, s, taste, web }, reason: '', speedLabel: speedLabel(c.latencyMs) }
   })
-  scored.sort((a, b) => b.score - a.score || Number(a.priceMicro - b.priceMicro))
+  const floor = opts.slider === 'best' ? 0 : QUALITY_FLOOR * qMax
+  const eligible = (c: { quality: number }) => (c.quality >= floor ? 1 : 0)
+  scored.sort((a, b) => eligible(b) - eligible(a) || b.score - a.score || Number(a.priceMicro - b.priceMicro))
 
   // One-line reasons, relative to the field.
   const bestQ = Math.max(...scored.map((c) => c.quality))

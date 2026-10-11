@@ -53,6 +53,11 @@ export const users = pgTable('users', {
   slider: sliderEnum('slider').notNull().default('balanced'),
   allocationMicro: micro('allocation_micro').notNull().default(sql`2000000`),
   weeklyLimitMicro: micro('weekly_limit_micro').notNull().default(sql`10000000`),
+  /** Daily spending cap (resets 00:00 UTC). */
+  dailyLimitMicro: micro('daily_limit_micro').notNull().default(sql`2000000`),
+  /** Tempo access key the app pays with; its on-chain daily limit backs up the caps. */
+  spendingKeyAddress: text('spending_key_address'),
+  spendingKeyExpiresAt: ts('spending_key_expires_at'),
   /** When the allocation runs out, continue the chat on the free model instead of stopping. */
   autoFreeFallback: boolean('auto_free_fallback').notNull().default(true),
   createdAt: createdAt(),

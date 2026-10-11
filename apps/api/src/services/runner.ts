@@ -82,7 +82,7 @@ const usd = (micro: bigint) => Number(micro) / 1e6
 /** Meters after this run, for the usage banner (never fails the run). */
 async function usageAfter(ctx: AppContext, userId: string) {
   try {
-    const [u] = await ctx.db.select({ id: schema.users.id, weeklyLimitMicro: schema.users.weeklyLimitMicro }).from(schema.users).where(eq(schema.users.id, userId))
+    const [u] = await ctx.db.select({ id: schema.users.id, weeklyLimitMicro: schema.users.weeklyLimitMicro, dailyLimitMicro: schema.users.dailyLimitMicro }).from(schema.users).where(eq(schema.users.id, userId))
     return u ? await usageFor(ctx, u) : undefined
   } catch {
     return undefined

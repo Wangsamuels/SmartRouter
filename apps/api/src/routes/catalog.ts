@@ -13,14 +13,43 @@ const TaskTypeZ = z.enum(['chat', 'writing', 'coding', 'research', 'translation'
 export function catalogRoutes(ctx: AppContext) {
   const app = new Hono<AuthVars>()
 
-  app.get('/catalog', zValidator('query', z.object({ taskType: TaskTypeZ.optional() })), async (c) => {
-    const { taskType } = c.req.valid('query')
-    const models = (await activeModels(ctx)).filter((m) => !taskType || m.taskTypes.includes(taskType))
-    return c.json({
-      models: models.map(publicModel),
-      attribution: 'Quality data: LMArena (CC BY 4.0). Prices: live from each provider via MPP.',
-    })
-  })
+  /**
+   * Model list for the picker. `sort`:
+   *  - price_asc / price_desc: by the typical price of one request
+   *  - quality: best for `taskType` first (needs taskType; overall average otherwise)
+   * Each model carries `qualityForTask` (0–1, LMArena-based) and `qualityRank` (1 = best) when taskType is given.
+   */
+  app.get(
+    '/catalog',
+    zValidator('query', z.object({ taskType: TaskTypeZ.optional(), sort: z.enum(['price_asc', 'price_desc', 'quality']).optional() })),
+    async (c) => {
+      const { taskType, sort } = c.req.valid('query')
+      const models = (await activeModels(ctx)).filter((m) => !taskType || m.taskTypes.includes(taskType))
+      const q = (m: (typeof models)[number]) => {
+        const byTask = (m.qualityByTask ?? {}) as Record<string, number>
+        if (taskType) return byTask[taskType] ?? 0
+        const v = Object.values(byTask)
+        return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0
+      }
+      const byQuality = [...models].sort((a, b) => q(b) - q(a) || Number(a.priceEstMicro - b.priceEstMicro))
+      const rank = new Map(byQuality.map((m, i) => [m.id, i + 1]))
+      const price = (m: (typeof models)[number]) => (m.payment === 'free' ? 0n : m.priceEstMicro)
+      const sorted =
+        sort === 'price_asc'
+          ? [...models].sort((a, b) => Number(price(a) - price(b)) || q(b) - q(a))
+          : sort === 'price_desc'
+            ? [...models].sort((a, b) => Number(price(b) - price(a)) || q(b) - q(a))
+            : sort === 'quality'
+              ? byQuality
+              : models
+      return c.json({
+        taskType: taskType ?? null,
+        sort: sort ?? null,
+        models: sorted.map((m) => ({ ...publicModel(m), ...(taskType ? { qualityForTask: q(m), qualityRank: rank.get(m.id) } : {}) })),
+        attribution: 'Quality data: LMArena (CC BY 4.0). Prices: live from each provider via MPP.',
+      })
+    },
+  )
 
   /**
    * One-off recommendation without a chat (chats use POST /chats and /chats/:id/quote).

@@ -17,7 +17,7 @@ const CURSOR = 'wallet-transfers'
 /** Max blocks per run (~0.56 s blocks: 20k ≈ 3 h of catch-up). */
 const MAX_SPAN = 20_000n
 /** Payment-channel escrow contracts (mppx defaults); channel state may name others. */
-const ESCROWS = ['0x33b901018174ddabe4841042ab76ba85d4e24f25', '0xe1c4d3dce17bc111181ddf716f75bae49e61a336']
+const ESCROWS = ['0x4d50500000000000000000000000000000000000', '0x33b901018174ddabe4841042ab76ba85d4e24f25', '0xe1c4d3dce17bc111181ddf716f75bae49e61a336'] // TIP-1034 precompile first
 const isSystem = (a: string) => a.startsWith('0xfeec') // Tempo fee manager
 
 export async function trackWallets({ cfg, db }: JobDeps) {

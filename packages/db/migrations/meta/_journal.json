@@ -43,6 +43,13 @@
       "when": 1791739701521,
       "tag": "0005_wealthy_hiroim",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791746527283,
+      "tag": "0006_icy_zarek",
+      "breakpoints": true
     }
   ]
 }

@@ -24,7 +24,8 @@ import { freeRemaining, freeSpentToday, promptHash, type TaskInput } from '../se
 import { runAndStream, SSE_HEADERS, sseStream, type RunArgs } from '../services/runner.js'
 import { concurrency } from '../middleware/rate-limit.js'
 import { SYSTEM_PROMPT, turnInput, type ChatRow } from '../services/turns.js'
-import { usageFor, weeklySpentMicro } from '../services/usage.js'
+import { capCheck, usageFor } from '../services/usage.js'
+import { tokenBalance } from '../services/wallet.js'
 
 const RunBody = z.object({
   quoteId: z.string().uuid(),
@@ -105,13 +106,13 @@ export function runRoutes(ctx: AppContext) {
     const body = {
       code: exhausted ? 'ALLOCATION_EXHAUSTED' : 'PAYMENT_REQUIRED',
       message: exhausted
-        ? 'Your allocation is used up. Top up to keep going, or continue on the free model.'
+        ? 'The current deposit is used up. Open the next automatic deposit (suggestedDepositUsd) and retry, or continue on the free model.'
         : 'Payment required: open a session (or sign the next voucher) and retry.',
       details: {
         priceUsd: usd(quote.priceMicro),
         channelId: open?.row.channelId,
         remainingUsd: remaining !== undefined ? usd(remaining) : undefined,
-        suggestedDepositUsd: Math.max(ctx.cfg.pricing.defaultAllocationUsd, usd(user.allocationMicro)),
+        suggestedDepositUsd: (await usageFor(ctx, user, open ?? null)).nextDepositUsd,
         reason,
         freeFallback: await freeFallbackInfo(user, quote.taskType),
       },
@@ -346,12 +347,13 @@ export function runRoutes(ctx: AppContext) {
 
       // ----- paid model -----
       if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured on this server')
-      if ((await weeklySpentMicro(ctx, user.id)) + quote.priceMicro > user.weeklyLimitMicro)
+      const breach = await capCheck(ctx, user, quote.priceMicro)
+      if (breach)
         throw new AppError(
-          'ALLOCATION_EXHAUSTED',
-          `This would pass your weekly limit of $${usd(user.weeklyLimitMicro).toFixed(2)}. Raise it in settings or continue free.`,
+          'SPENDING_CAP_REACHED',
+          `This would pass your ${breach.reason === 'daily_limit' ? 'daily' : 'weekly'} spending cap of $${usd(breach.limitMicro).toFixed(2)}. Raise it in settings or continue free.`,
           {
-            reason: 'weekly_limit',
+            reason: breach.reason,
             freeFallback: await freeFallbackInfo(user, quote.taskType),
           },
         )
@@ -414,8 +416,11 @@ export function runRoutes(ctx: AppContext) {
         recipient: ctx.sessions?.payee ?? ctx.cfg.treasury.address,
         operator: ctx.sessions?.operator.address,
       },
-      suggestedDepositUsd: Math.max(ctx.cfg.pricing.defaultAllocationUsd, usd(user.allocationMicro)),
-      usage: await usageFor(ctx, user, open ?? null),
+      // Next automatic deposit: min(DEPOSIT_CHUNK_USD, what's left of today's and this week's caps).
+      ...(await (async () => {
+        const usage = await usageFor(ctx, user, open ?? null, { mainBalanceMicro: await tokenBalance(ctx, user.tempoAddress as `0x${string}`).catch(() => undefined) })
+        return { suggestedDepositUsd: usage.nextDepositUsd, usage }
+      })()),
       session: open
         ? {
             channelId: open.row.channelId,

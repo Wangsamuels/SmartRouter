@@ -79,3 +79,20 @@ describe('buildContext', () => {
     expect(ctx.needsSummaryThroughSeq).toBeUndefined()
   })
 })
+
+describe('slider behaviour on a writing field', () => {
+  const field = [
+    { id: 'opus', label: 'Opus', quality: 1, priceMicro: 24_000n, latencyMs: 9000 },
+    { id: 'gemini', label: 'Gemini Flash', quality: 0.911, priceMicro: 4_500n, latencyMs: 1500 },
+    { id: 'gemma', label: 'Gemma', quality: 0.742, priceMicro: 430n, latencyMs: 1500 },
+    { id: 'oss', label: 'gpt-oss', quality: 0.436, priceMicro: 207n, latencyMs: 1500 },
+  ]
+  it('best puts the strongest model first', () => {
+    expect(rankModels(field, { taskType: 'writing', slider: 'best' })[0]!.id).toBe('opus')
+  })
+  it('cheapest skips models far below the field', () => {
+    const r = rankModels(field, { taskType: 'writing', slider: 'cheapest' })
+    expect(r[0]!.id).toBe('gemma')
+    expect(r.at(-1)!.id).toBe('oss')
+  })
+})

@@ -132,7 +132,7 @@ export function authRoutes(ctx: AppContext) {
       loginMethod: u.loginMethod ?? 'wallet',
       country: u.country,
       usage: await usageFor(ctx, u),
-      settings: { slider: u.slider, allocationUsd: Number(u.allocationMicro) / 1e6, weeklyLimitUsd: Number(u.weeklyLimitMicro) / 1e6, autoFreeFallback: u.autoFreeFallback },
+      settings: { slider: u.slider, dailyLimitUsd: Number(u.dailyLimitMicro) / 1e6, weeklyLimitUsd: Number(u.weeklyLimitMicro) / 1e6, autoFreeFallback: u.autoFreeFallback },
       allocation: session
         ? { channelId: session.channelId, depositUsd: Number(session.depositMicro) / 1e6, usedUsd: Number(used) / 1e6, remainingUsd: Number(session.depositMicro - used) / 1e6 }
         : null,
@@ -148,24 +148,38 @@ export function authRoutes(ctx: AppContext) {
         slider: z.enum(['cheapest', 'balanced', 'best']).optional(),
         allocationUsd: z.number().min(0.5).max(100).optional(),
         weeklyLimitUsd: z.number().min(0).max(1_000).optional(),
+        dailyLimitUsd: z.number().min(0).max(1_000).optional(),
         autoFreeFallback: z.boolean().optional(),
         country: z.string().length(2).optional(),
       }),
     ),
     async (c) => {
       const b = c.req.valid('json')
+      const me = c.get('user')
+      const daily = b.dailyLimitUsd !== undefined ? BigInt(Math.round(b.dailyLimitUsd * 1e6)) : me.dailyLimitMicro
+      const weekly = b.weeklyLimitUsd !== undefined ? BigInt(Math.round(b.weeklyLimitUsd * 1e6)) : me.weeklyLimitMicro
+      if (daily > weekly) throw new AppError('VALIDATION_FAILED', 'The daily cap can’t be higher than the weekly cap')
       const [u] = await ctx.db
         .update(schema.users)
         .set({
           ...(b.slider ? { slider: b.slider } : {}),
           ...(b.allocationUsd !== undefined ? { allocationMicro: BigInt(Math.round(b.allocationUsd * 1e6)) } : {}),
-          ...(b.weeklyLimitUsd !== undefined ? { weeklyLimitMicro: BigInt(Math.round(b.weeklyLimitUsd * 1e6)) } : {}),
+          ...(b.weeklyLimitUsd !== undefined ? { weeklyLimitMicro: weekly } : {}),
+          ...(b.dailyLimitUsd !== undefined ? { dailyLimitMicro: daily } : {}),
           ...(b.autoFreeFallback !== undefined ? { autoFreeFallback: b.autoFreeFallback } : {}),
           ...(b.country ? { country: b.country.toUpperCase() } : {}),
         })
         .where(eq(schema.users.id, c.get('user').id))
         .returning()
-      return c.json({ slider: u!.slider, allocationUsd: Number(u!.allocationMicro) / 1e6, weeklyLimitUsd: Number(u!.weeklyLimitMicro) / 1e6, autoFreeFallback: u!.autoFreeFallback, country: u!.country })
+      return c.json({
+        slider: u!.slider,
+        dailyLimitUsd: Number(u!.dailyLimitMicro) / 1e6,
+        weeklyLimitUsd: Number(u!.weeklyLimitMicro) / 1e6,
+        autoFreeFallback: u!.autoFreeFallback,
+        country: u!.country,
+        // When the daily cap changes, the frontend updates the spending key's on-chain limit to this.
+        spendingKeyLimitUsd: Number(daily + ctx.cfg.pricing.depositChunkMicro) / 1e6,
+      })
     },
   )
 

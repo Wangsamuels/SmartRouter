@@ -21,7 +21,8 @@
     "testnet:session": "tsx scripts/testnet-session.ts",
     "treasury:check": "tsx scripts/treasury-check.ts",
     "load:test": "tsx scripts/load-test.ts",
-    "wallet:test": "tsx scripts/wallet-test.ts"
+    "wallet:test": "tsx scripts/wallet-test.ts",
+    "caps:test": "tsx scripts/caps-test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

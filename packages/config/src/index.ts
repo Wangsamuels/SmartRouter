@@ -34,8 +34,12 @@ const EnvSchema = z.object({
   SETTLE_IDLE_MINUTES: z.coerce.number().positive().default(10),
   /** …and owes at least this much (USD). Idle close collects anything smaller. */
   SETTLE_MIN_USD: z.coerce.number().nonnegative().default(0.05),
-  /** Close channels unused this long: treasury gets what was spent, the user gets the rest back. */
-  IDLE_CLOSE_HOURS: z.coerce.number().positive().default(24),
+  /** Close channels unused this long: we get what was spent, the user gets the rest back. */
+  IDLE_CLOSE_HOURS: z.coerce.number().positive().default(2),
+  /** Size of each automatic deposit into the payment contract (capped by what's left of the user's caps). */
+  DEPOSIT_CHUNK_USD: z.coerce.number().positive().default(1),
+  /** Lifetime of the spending key (Tempo access key) the app asks users to authorize. */
+  SPENDING_KEY_DAYS: z.coerce.number().int().positive().default(7),
   /** Alert thresholds (USD) for the wallets the server spends from. */
   HOT_WALLET_MIN_USD: z.coerce.number().nonnegative().default(2),
   OPERATOR_MIN_USD: z.coerce.number().nonnegative().default(0.25),
@@ -182,6 +186,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       maxProviderPriceMultiplier: e.MAX_PROVIDER_PRICE_MULTIPLIER,
       feePct: e.FEE_PCT,
       defaultAllocationUsd: e.DEFAULT_ALLOCATION_USD,
+      depositChunkMicro: BigInt(Math.round(e.DEPOSIT_CHUNK_USD * 1e6)),
+      spendingKeyDays: e.SPENDING_KEY_DAYS,
     },
     free: {
       cloudflareAccountId: e.CLOUDFLARE_ACCOUNT_ID,
