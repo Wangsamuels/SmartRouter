@@ -10,6 +10,8 @@ import { reconcile } from './reconcile.js'
 import { settleSessions } from './settlement.js'
 import { failStaleRuns } from './stale.js'
 import { summariseChats } from './summaries.js'
+import { profitSweep } from './sweep.js'
+import { trackWallets } from './wallet.js'
 
 /**
  * Job registry. Each entry: queue name, cron (UTC), handler.
@@ -43,4 +45,6 @@ export const jobs: JobDef[] = [
   { name: 'wallet-alerts', cron: '*/15 * * * *', handler: walletAlerts },
   { name: 'reconcile', cron: '15 3 * * *', handler: reconcile },
   { name: 'cleanup', cron: '7 * * * *', handler: cleanup },
+  { name: 'profit-sweep', cron: '*/15 * * * *', handler: profitSweep },
+  { name: 'wallet-tracker', cron: '* * * * *', handler: trackWallets },
 ]

@@ -14,6 +14,7 @@ import { chatRoutes } from './routes/chats.js'
 import { healthRoutes } from './routes/health.js'
 import { requestRoutes } from './routes/requests.js'
 import { runRoutes } from './routes/run.js'
+import { walletRoutes } from './routes/wallet.js'
 
 export function createApp(ctx: AppContext) {
   const app = new Hono()
@@ -51,6 +52,8 @@ export function createApp(ctx: AppContext) {
   app.use('/chats', rateLimit(ctx.redis, { name: 'chat-create', max: n(30), windowMs: minute, key: (c) => (c.req.method === 'POST' ? ip(c) : undefined) }))
   app.use('/chats/:id/quote', rateLimit(ctx.redis, { name: 'quote', max: n(90), windowMs: minute, key: ip }))
   app.use('/recommend', rateLimit(ctx.redis, { name: 'recommend', max: n(60), windowMs: minute, key: ip }))
+  app.use('/wallet/*', rateLimit(ctx.redis, { name: 'wallet', max: n(60), windowMs: minute, key: ip }))
+  app.use('/relay', rateLimit(ctx.redis, { name: 'relay', max: n(60), windowMs: minute, key: ip }))
   app.use('/waitlist', rateLimit(ctx.redis, { name: 'waitlist', max: n(5), windowMs: 10 * minute, key: ip }))
 
   app.get('/', (c) => c.json({ name: 'smartrouter-api', network: ctx.cfg.network.name, version: ctx.cfg.version }))
@@ -60,6 +63,7 @@ export function createApp(ctx: AppContext) {
   app.route('/', chatRoutes(ctx))
   app.route('/', runRoutes(ctx))
   app.route('/', requestRoutes(ctx))
+  app.route('/', walletRoutes(ctx))
 
   app.onError(onError)
   app.notFound(notFound)

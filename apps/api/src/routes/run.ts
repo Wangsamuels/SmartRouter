@@ -78,7 +78,8 @@ export function runRoutes(ctx: AppContext) {
     await ctx.db
       .insert(schema.userSessions)
       .values({ channelId: channelId.toLowerCase(), userId: user.id, ...values })
-      .onConflictDoUpdate({ target: schema.userSessions.channelId, set: values })
+      // A closed channel's state reports deposit 0; keep the largest deposit we saw (activity feed).
+      .onConflictDoUpdate({ target: schema.userSessions.channelId, set: { ...values, depositMicro: sql`greatest(${schema.userSessions.depositMicro}, ${state.deposit.toString()}::bigint)` } })
     return state
   }
 
@@ -410,7 +411,7 @@ export function runRoutes(ctx: AppContext) {
       network: {
         chainId: ctx.cfg.network.chainId,
         token: ctx.cfg.tokens.payment,
-        recipient: ctx.cfg.treasury.address,
+        recipient: ctx.sessions?.payee ?? ctx.cfg.treasury.address,
         operator: ctx.sessions?.operator.address,
       },
       suggestedDepositUsd: Math.max(ctx.cfg.pricing.defaultAllocationUsd, usd(user.allocationMicro)),

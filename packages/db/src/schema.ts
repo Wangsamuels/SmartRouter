@@ -35,7 +35,9 @@ export const messageRoleEnum = pgEnum('message_role', ['user', 'assistant', 'sys
 export const messageStatusEnum = pgEnum('message_status', ['pending', 'streaming', 'done', 'failed'])
 export const providerSessionStatusEnum = pgEnum('provider_session_status', ['open', 'closing', 'closed'])
 export const aliasSourceEnum = pgEnum('alias_source', ['lmarena', 'aa', 'openrouter'])
-export const treasuryKindEnum = pgEnum('treasury_kind', ['settle', 'close', 'provider_topup', 'charge', 'swap', 'refill'])
+export const treasuryKindEnum = pgEnum('treasury_kind', ['settle', 'close', 'provider_topup', 'charge', 'swap', 'refill', 'sweep'])
+export const walletMoveKindEnum = pgEnum('wallet_move_kind', ['deposit', 'send', 'send_cross_chain'])
+export const walletMoveStatusEnum = pgEnum('wallet_move_status', ['pending', 'completed', 'failed', 'refunding', 'refunded', 'action_required'])
 export const txStatusEnum = pgEnum('tx_status', ['pending', 'confirmed', 'failed'])
 export const waitlistInterestEnum = pgEnum('waitlist_interest', ['naira', 'credits'])
 
@@ -330,3 +332,77 @@ export const sessionStore = pgTable('session_store', {
   value: text('value').notNull(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 })
+
+// ---------- wallet (main wallet deposits and sends; the AI balance lives in user_sessions) ----------
+
+/** Cross-chain deposit addresses (Relay): one per user per source chain + token. */
+export const depositAddresses = pgTable(
+  'deposit_addresses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('relay'),
+    sourceChain: text('source_chain').notNull(), // e.g. base
+    sourceChainId: integer('source_chain_id').notNull(),
+    sourceToken: text('source_token').notNull(), // symbol, e.g. USDC
+    sourceTokenAddress: text('source_token_address').notNull(),
+    sourceTokenDecimals: integer('source_token_decimals').notNull(),
+    address: text('address').notNull(), // where the user sends funds on the source chain
+    refundAddress: text('refund_address'),
+    providerRef: text('provider_ref'), // quote request id
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('deposit_addresses_user_route_idx').on(t.userId, t.sourceChain, t.sourceToken)],
+)
+
+/** Block cursors for chain scanners (e.g. the wallet transfer scanner). */
+export const chainCursors = pgTable('chain_cursors', {
+  name: text('name').primaryKey(),
+  block: bigint('block', { mode: 'bigint' }).notNull(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+})
+
+/** Money in and out of a user's main wallet that went through SmartRouter (activity feed). */
+export const walletMoves = pgTable(
+  'wallet_moves',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: walletMoveKindEnum('kind').notNull(),
+    status: walletMoveStatusEnum('status').notNull().default('pending'),
+    /** Amount leaving (send) or arriving (deposit), micro-USD. */
+    amountMicro: micro('amount_micro').notNull(),
+    /** What actually arrived at the destination, once known. */
+    deliveredMicro: micro('delivered_micro'),
+    chain: text('chain').notNull(), // the other side: source chain of a deposit, destination of a send
+    token: text('token').notNull(),
+    counterparty: text('counterparty'), // recipient of a send / deposit address
+    txHash: text('tx_hash'), // Tempo-side transaction
+    externalId: text('external_id').unique(), // Relay request id, or `<txHash>:<logIndex>` for on-chain transfers
+    /** Contracts a cross-chain send may call (Relay's Tempo targets), checked by the fee relay. */
+    allowedTargets: jsonb('allowed_targets').$type<string[]>(),
+    detail: jsonb('detail').$type<Record<string, unknown>>(),
+    createdAt: createdAt(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('wallet_moves_user_created_idx').on(t.userId, t.createdAt), index('wallet_moves_status_idx').on(t.status)],
+)
+
+/** Network fees the operator paid for a user's own wallet transactions (the daily cap counts these). */
+export const sponsoredTxs = pgTable(
+  'sponsored_txs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    signPayload: text('sign_payload').notNull().unique(),
+    method: text('method').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('sponsored_txs_user_created_idx').on(t.userId, t.createdAt)],
+)

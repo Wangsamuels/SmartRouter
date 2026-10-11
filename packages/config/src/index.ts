@@ -39,6 +39,28 @@ const EnvSchema = z.object({
   /** Alert thresholds (USD) for the wallets the server spends from. */
   HOT_WALLET_MIN_USD: z.coerce.number().nonnegative().default(2),
   OPERATOR_MIN_USD: z.coerce.number().nonnegative().default(0.25),
+  /**
+   * Where users' payments land. 'operator' = the operator wallet (on mainnet that is the hot
+   * wallet): it pays providers and every network fee first, and the profit-sweep job sends the
+   * excess to PROFIT_ADDRESS. 'treasury' = straight to TREASURY_ADDRESS (the old behaviour).
+   */
+  REVENUE_TO: z.enum(['operator', 'treasury']).default('operator'),
+  /** Profit goes here (defaults to TREASURY_ADDRESS). */
+  PROFIT_ADDRESS: optionalStr.pipe(address.optional()),
+  /** The revenue wallet keeps this much for provider payments and fees; the rest is profit. */
+  HOT_WALLET_FLOAT_USD: z.coerce.number().nonnegative().default(10),
+  /** Sweep as soon as profit reaches this much… */
+  PROFIT_SWEEP_MIN_USD: z.coerce.number().positive().default(20),
+  /** …or at least this often (anything above PROFIT_SWEEP_DUST_USD). */
+  PROFIT_SWEEP_INTERVAL_HOURS: z.coerce.number().positive().default(24),
+  PROFIT_SWEEP_DUST_USD: z.coerce.number().nonnegative().default(0.1),
+  /** Relay (cross-chain deposits and sends). Optional key: adds Solana deposits and higher rate limits. */
+  RELAY_API_KEY: optionalStr,
+  RELAY_API_URL: z.string().default('https://api.relay.link'),
+  /** Network fees the operator pays for each user's own wallet transactions (sends, transfers). */
+  SPONSOR_TX_PER_DAY: z.coerce.number().int().nonnegative().default(20),
+  /** Largest single send a user can make from the app (USD). */
+  SEND_MAX_USD: z.coerce.number().positive().default(1000),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: optionalStr,
   SESSION_SECRET: z.string().min(32),
@@ -120,6 +142,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       settleMinMicro: BigInt(Math.round(e.SETTLE_MIN_USD * 1e6)),
       idleCloseMs: e.IDLE_CLOSE_HOURS * 3_600_000,
     },
+    revenue: {
+      to: e.REVENUE_TO,
+      profitAddress: (e.PROFIT_ADDRESS ?? e.TREASURY_ADDRESS) as `0x${string}` | undefined,
+      floatMicro: BigInt(Math.round(e.HOT_WALLET_FLOAT_USD * 1e6)),
+      sweepMinMicro: BigInt(Math.round(e.PROFIT_SWEEP_MIN_USD * 1e6)),
+      sweepIntervalMs: e.PROFIT_SWEEP_INTERVAL_HOURS * 3_600_000,
+      sweepDustMicro: BigInt(Math.round(e.PROFIT_SWEEP_DUST_USD * 1e6)),
+    },
+    relay: { apiKey: e.RELAY_API_KEY, url: e.RELAY_API_URL.replace(/\/+$/, '') },
+    wallet: { sponsorTxPerDay: e.SPONSOR_TX_PER_DAY, sendMaxMicro: BigInt(Math.round(e.SEND_MAX_USD * 1e6)) },
     alerts: {
       hotWalletMinMicro: BigInt(Math.round(e.HOT_WALLET_MIN_USD * 1e6)),
       operatorMinMicro: BigInt(Math.round(e.OPERATOR_MIN_USD * 1e6)),

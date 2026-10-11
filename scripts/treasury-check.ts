@@ -78,7 +78,17 @@ let charged = 0n
 for (let i = 1; i <= RUNS; i++) {
   const prompt = `Treasury check ${i}: reply with one short sentence about Lagos.`
   const q = await call('POST', `/chats/${chat.chatId}/quote`, { prompt })
-  const r = await manager.fetch(API + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ quoteId: q.quoteId, prompt }) })
+  let r: Response
+  try {
+    r = await manager.fetch(API + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ quoteId: q.quoteId, prompt }) })
+  } catch (e) {
+    // The mppx client refuses before sending when the deposit can't cover the next voucher.
+    if (/exceeds local maxDeposit/.test(String(e))) {
+      console.log(`  run ${i}: deposit used up (client refused: ${String((e as Error).message)}) — the app shows the top-up prompt here`)
+      break
+    }
+    throw e
+  }
   const text = await r.text()
   const done = text.split('\n\n').find((b) => b.startsWith('event: done'))
   const err = text.split('\n\n').find((b) => b.startsWith('event: error'))
@@ -86,6 +96,7 @@ for (let i = 1; i <= RUNS; i++) {
     const d = JSON.parse(done.split('data: ')[1]!)
     charged += BigInt(Math.round(d.chargedUsd * 1e6))
     console.log(`  run ${i}: ${q.modelId} charged $${d.chargedUsd} — ${String(d.text ?? '').slice(0, 70).replace(/\n/g, ' ')}`)
+    if (d.usage?.alert) console.log(`    usage alert: ${d.usage.alert.level} · ${d.usage.alert.message} · action ${d.usage.alert.action}`)
   } else console.log(`  run ${i}: ${r.status} ${err ?? text.slice(0, 200)}`)
 }
 const s1 = (await call('GET', '/sessions/current')).session

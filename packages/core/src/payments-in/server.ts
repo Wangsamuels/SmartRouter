@@ -5,7 +5,9 @@
  * `spent` to the treasury; the unspent rest returns to the user on close.
  *
  *   payer     = the user's Tempo account
- *   recipient = TREASURY_ADDRESS (payee)
+ *   recipient = the operator wallet (REVENUE_TO=operator, the default; on mainnet that is the
+ *               hot wallet, which pays providers and all fees first and sweeps profit to
+ *               PROFIT_ADDRESS) or TREASURY_ADDRESS (REVENUE_TO=treasury)
  *   operator  = OPERATOR_PRIVATE_KEY (sends settle/close, sponsors open/top-up fees)
  *
  * Accounting rule ("never charged for failed results"): mppx deducts the request amount
@@ -76,6 +78,7 @@ export function createSessionServer(cfg: Config, db: Db) {
     transport: tempoTransport(cfg),
   })
   const store = pgSessionStore(db, { keyPrefix: `mpp:${cfg.network.chainId}:` })
+  const payee = (cfg.revenue.to === 'operator' ? operator.address : cfg.treasury.address) as `0x${string}`
 
   const mppx = Mppx.create({
     secretKey: cfg.mpp.secretKey,
@@ -83,7 +86,7 @@ export function createSessionServer(cfg: Config, db: Db) {
     methods: [
       tempo.session({
         account: operator,
-        recipient: cfg.treasury.address,
+        recipient: payee,
         operator: operator.address,
         currency: cfg.tokens.payment,
         decimals: 6,
@@ -107,6 +110,8 @@ export function createSessionServer(cfg: Config, db: Db) {
     store,
     client,
     operator,
+    /** Where users' payments land (see REVENUE_TO). */
+    payee,
     chainId: cfg.network.chainId,
 
     /** Per-request payment gate. amountMicro is the quote price; meta binds the voucher to the quote. */
