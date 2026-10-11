@@ -20,3 +20,7 @@ scripts/out/
 dump.rdb
 .rpc-*
 .privy
+
+# local source bundles (may contain secrets)
+_tmp_src_*.tgz
+*.tgz
