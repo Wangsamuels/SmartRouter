@@ -32,7 +32,7 @@ export function maskEmail(email: string) {
 export async function issueSendCode(ctx: AppContext, user: { id: string; email: string | null }, target: SendTarget, view: { amountUsd: number; chainName: string; token: string }) {
   const echo = ctx.cfg.wallet.sendCodeEcho
   if (!user.email && !echo) throw new AppError('EMAIL_REQUIRED', 'Add an email to your account to send money out')
-  if (!echo && !ctx.cfg.email.resendApiKey) throw new AppError('PROVIDER_UNAVAILABLE', 'Email codes are not configured')
+  if (!echo && !ctx.cfg.email.configured) throw new AppError('PROVIDER_UNAVAILABLE', 'Email codes are not configured')
 
   const [recent] = await ctx.db
     .select({ n: sql<number>`count(*)::int`, last: sql<string | null>`max(${schema.sendCodes.createdAt})::text` })
@@ -52,7 +52,7 @@ export async function issueSendCode(ctx: AppContext, user: { id: string; email: 
   const id = randomUUID()
   await ctx.db.insert(schema.sendCodes).values({ id, userId: user.id, codeHash: hash(ctx, id, code), ...target, expiresAt })
 
-  if (user.email && ctx.cfg.email.resendApiKey) await email(ctx, user.email, code, ttl, view, target.recipient)
+  if (user.email && ctx.cfg.email.configured) await email(ctx, user.email, code, ttl, view, target.recipient)
   return {
     verificationId: id,
     sentTo: user.email ? maskEmail(user.email) : null,
@@ -109,14 +109,30 @@ async function email(ctx: AppContext, to: string, code: string, ttl: number, v: 
 <p style="margin:0 0 8px">Sending <b>${amount}</b> to <code>${short}</code> on ${v.chainName}.</p>
 <p style="margin:0 0 16px;color:#555">The code expires in ${ttl} minutes and works once.</p>
 <p style="margin:0;color:#555;font-size:13px">If this wasn't you, don't share the code with anyone, and sign out of SmartRouter on other devices.</p></div>`
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { authorization: `Bearer ${ctx.cfg.email.resendApiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ from: ctx.cfg.email.from, to: [to], subject: `${code} is your SmartRouter code`, text, html }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as const)
+  const subject = `${code} is your SmartRouter code`
+  const { name, address } = parseFrom(ctx.cfg.email.from)
+  const req: { url: string; headers: Record<string, string>; body: unknown } = ctx.cfg.email.brevoApiKey
+    ? {
+        url: 'https://api.brevo.com/v3/smtp/email',
+        headers: { 'api-key': ctx.cfg.email.brevoApiKey, 'content-type': 'application/json', accept: 'application/json' },
+        body: { sender: { name, email: address }, to: [{ email: to }], subject, textContent: text, htmlContent: html },
+      }
+    : {
+        url: 'https://api.resend.com/emails',
+        headers: { authorization: `Bearer ${ctx.cfg.email.resendApiKey}`, 'content-type': 'application/json' },
+        body: { from: ctx.cfg.email.from, to: [to], subject, text, html },
+      }
+  const res = await fetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body), signal: AbortSignal.timeout(10_000) }).catch(
+    (e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as const,
+  )
   if (!res.ok) {
     console.warn(`[send-code] email failed ${res.status} ${(await res.text()).slice(0, 200)}`)
     throw new AppError('PROVIDER_UNAVAILABLE', "Couldn't send the code email; try again in a minute")
   }
+}
+
+/** "SmartRouter <codes@x.com>" → { name, address }; a bare address gets the name SmartRouter. */
+export function parseFrom(from: string) {
+  const m = from.match(/^\s*(.*?)\s*<([^>]+)>\s*$/)
+  return m ? { name: m[1] || 'SmartRouter', address: m[2]!.trim() } : { name: 'SmartRouter', address: from.trim() }
 }

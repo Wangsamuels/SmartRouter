@@ -160,7 +160,7 @@ export const messages = pgTable(
     seq: integer('seq').notNull(), // 1, 2, 3… within the chat
     role: messageRoleEnum('role').notNull(),
     content: text('content').notNull().default(''),
-    attachments: jsonb('attachments').$type<{ kind: string; ref: string; mime?: string }[]>(),
+    attachments: jsonb('attachments').$type<{ kind: string; ref: string; mime?: string; name?: string; sizeBytes?: number }[]>(), // kind 'file': ref = upload id
     modelId: text('model_id').references(() => models.id), // which model wrote this (assistant)
     requestId: uuid('request_id'), // the paid/free run that produced it
     resultRef: text('result_ref'), // image/music file in object storage
@@ -194,6 +194,7 @@ export const quotes = pgTable(
     taskType: taskTypeEnum('task_type').notNull(),
     modelId: text('model_id').notNull().references(() => models.id),
     promptHash: text('prompt_hash'), // /run must send the prompt that was quoted
+    attachmentIds: jsonb('attachment_ids').$type<string[]>(), // uploaded files priced into the quote; /run uses the same
     contextTokens: integer('context_tokens'), // history + prompt tokens priced into the quote
     maxOutputTokens: integer('max_output_tokens'), // reply cap priced into the quote; /run uses the same
     priceMicro: micro('price_micro').notNull(), // what the user pays (0 for the free model)
@@ -395,6 +396,29 @@ export const walletMoves = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [index('wallet_moves_user_created_idx').on(t.userId, t.createdAt), index('wallet_moves_status_idx').on(t.status)],
+)
+
+/** Files users upload into chats (documents; their text goes to the model). Bytes live in R2. */
+export const uploads = pgTable(
+  'uploads',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    objectKey: text('object_key').notNull(),
+    filename: text('filename').notNull(),
+    mime: text('mime').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    status: text('status').notNull().default('pending'), // pending | ready | failed | deleted
+    text: text('text'), // extracted text (capped)
+    tokens: integer('tokens'),
+    truncated: boolean('truncated').notNull().default(false),
+    error: text('error'),
+    expiresAt: ts('expires_at').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('uploads_user_created_idx').on(t.userId, t.createdAt)],
 )
 
 /** 6-digit email codes that confirm money leaving a user's wallet; one per send, bound to its amount and recipient. */

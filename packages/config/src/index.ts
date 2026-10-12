@@ -65,7 +65,8 @@ const EnvSchema = z.object({
   SPONSOR_TX_PER_DAY: z.coerce.number().int().nonnegative().default(20),
   /** Largest single send a user can make from the app (USD). */
   SEND_MAX_USD: z.coerce.number().positive().default(1000),
-  /** Resend (resend.com) for the 6-digit codes that confirm money leaving a user's wallet. */
+  /** Email for the 6-digit codes that confirm money leaving a user's wallet: Brevo (brevo.com) if set, else Resend (resend.com). */
+  BREVO_API_KEY: optionalStr,
   RESEND_API_KEY: optionalStr,
   EMAIL_FROM: z.string().default('SmartRouter <onboarding@resend.dev>'),
   /** Minutes a send code stays valid. */
@@ -83,6 +84,15 @@ const EnvSchema = z.object({
   S3_SECRET_ACCESS_KEY: optionalStr,
   /** Public base URL for the bucket (R2 public bucket URL or custom domain). */
   S3_PUBLIC_URL: optionalStr,
+  /** Private bucket for users' uploaded files (same R2 account and keys as S3_*). */
+  UPLOADS_BUCKET: z.string().default('smartrouter-upload'),
+  UPLOAD_MAX_MB: z.coerce.number().positive().default(20),
+  UPLOADS_PER_DAY: z.coerce.number().int().positive().default(30),
+  /** Must match the bucket's R2 lifecycle rule. */
+  UPLOAD_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  /** File text a paid / free model gets per message (tokens); longer files are cut, and the user is told. */
+  ATTACH_TOKENS_PAID: z.coerce.number().int().positive().default(32_000),
+  ATTACH_TOKENS_FREE: z.coerce.number().int().positive().default(2_500),
   AA_API_KEY: optionalStr,
   SENTRY_DSN: optionalStr,
   MAX_PROVIDER_PRICE_MULTIPLIER: z.coerce.number().positive().default(2),
@@ -134,6 +144,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
           ...(e.TEMPO_RPC_FALLBACK_URLS ? e.TEMPO_RPC_FALLBACK_URLS.split(',').map((u) => u.trim()).filter(Boolean) : [network.rpcUrl, ...network.fallbackRpcUrls]),
         ]),
       ] as string[],
+      /** Tempo's own node. Some third-party RPCs (dRPC) lack Tempo methods like eth_fillTransaction, which the fee relay needs. */
+      nodeRpcUrl: network.rpcUrl as string,
       explorer: network.explorer,
       feePayerUrl: e.FEE_PAYER_URL ?? network.feePayerUrl,
     },
@@ -168,7 +180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       sendCodeTtlMin: e.SEND_CODE_TTL_MIN,
       sendCodeEcho: e.SEND_CODE_ECHO === 'true' && e.TEMPO_NETWORK !== 'tempo',
     },
-    email: { resendApiKey: e.RESEND_API_KEY, from: e.EMAIL_FROM },
+    email: { brevoApiKey: e.BREVO_API_KEY, resendApiKey: e.RESEND_API_KEY, from: e.EMAIL_FROM, configured: Boolean(e.BREVO_API_KEY || e.RESEND_API_KEY) },
     alerts: {
       hotWalletMinMicro: BigInt(Math.round(e.HOT_WALLET_MIN_USD * 1e6)),
       operatorMinMicro: BigInt(Math.round(e.OPERATOR_MIN_USD * 1e6)),
@@ -192,6 +204,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       accessKeyId: e.S3_ACCESS_KEY_ID,
       secretAccessKey: e.S3_SECRET_ACCESS_KEY,
       publicUrl: e.S3_PUBLIC_URL?.replace(/\/+$/, ''),
+    },
+    uploads: {
+      bucket: e.UPLOADS_BUCKET,
+      maxBytes: Math.round(e.UPLOAD_MAX_MB * 1024 * 1024),
+      perDay: e.UPLOADS_PER_DAY,
+      ttlDays: e.UPLOAD_TTL_DAYS,
+      attachTokensPaid: e.ATTACH_TOKENS_PAID,
+      attachTokensFree: e.ATTACH_TOKENS_FREE,
     },
     aaApiKey: e.AA_API_KEY,
     sentryDsn: e.SENTRY_DSN,

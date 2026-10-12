@@ -2,7 +2,7 @@ import { Redis } from 'ioredis'
 import { createPublicClient } from 'viem'
 import { tempo, tempoModerato } from 'viem/chains'
 import { config, needsTls } from '@smartrouter/config'
-import { createMediaStore, createProviderRuntime, createSessionServer, tempoTransport, type SessionServer } from '@smartrouter/core'
+import { createMediaStore, createProviderRuntime, createUploadStore, createSessionServer, tempoTransport, type SessionServer } from '@smartrouter/core'
 import { createDb } from '@smartrouter/db'
 import { createPrivyVerifier } from './services/privy.js'
 
@@ -29,6 +29,7 @@ export function createContext() {
 
   const providers = createProviderRuntime(cfg, { db })
   const media = createMediaStore(cfg)
+  const uploads = createUploadStore(cfg)
 
   // Paid runs need the treasury, an operator key and MPP_SECRET_KEY; without them only free runs work.
   let sessions: SessionServer | undefined
@@ -40,7 +41,7 @@ export function createContext() {
 
   const privy = cfg.privy.appId ? createPrivyVerifier(cfg.privy.appId) : undefined
 
-  return { cfg, db, sql, redis, rpc, providers, media, sessions, privy, needsTls }
+  return { cfg, db, sql, redis, rpc, providers, media, uploads, sessions, privy, needsTls }
 }
 
 export type AppContext = ReturnType<typeof createContext>

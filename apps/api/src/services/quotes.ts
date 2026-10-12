@@ -99,7 +99,7 @@ async function tasteFor(ctx: AppContext, userId: string, taskType: TaskType) {
  */
 export async function createQuote(
   ctx: AppContext,
-  args: { userId: string; chatId?: string; model: CatalogModel; input: TaskInput },
+  args: { userId: string; chatId?: string; model: CatalogModel; input: TaskInput; attachmentIds?: string[] },
 ): Promise<{ id: string; priceMicro: bigint; estCostMicro: bigint; source: Option['priceSource']; expiresAt: Date }> {
   const { model, input } = args
   let costMicro: bigint
@@ -128,6 +128,7 @@ export async function createQuote(
       taskType: input.taskType,
       modelId: model.id,
       promptHash: promptHash(input.rawPrompt ?? input.prompt),
+      attachmentIds: args.attachmentIds?.length ? args.attachmentIds : null,
       contextTokens: input.contextTokens,
       maxOutputTokens: task.kind === 'text' ? task.maxOutputTokens : null,
       priceMicro,

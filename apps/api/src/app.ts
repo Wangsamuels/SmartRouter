@@ -15,6 +15,7 @@ import { healthRoutes } from './routes/health.js'
 import { requestRoutes } from './routes/requests.js'
 import { runRoutes } from './routes/run.js'
 import { walletRoutes } from './routes/wallet.js'
+import { uploadRoutes } from './routes/uploads.js'
 
 export function createApp(ctx: AppContext) {
   const app = new Hono()
@@ -64,6 +65,7 @@ export function createApp(ctx: AppContext) {
   app.route('/', runRoutes(ctx))
   app.route('/', requestRoutes(ctx))
   app.route('/', walletRoutes(ctx))
+  app.route('/', uploadRoutes(ctx))
 
   app.onError(onError)
   app.notFound(notFound)

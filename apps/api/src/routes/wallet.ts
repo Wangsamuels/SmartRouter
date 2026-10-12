@@ -8,7 +8,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { createClient, encodeFunctionData, erc20Abi, http, isAddress, type Hex } from 'viem'
+import { createClient, encodeFunctionData, erc20Abi, fallback, http, isAddress, type Hex } from 'viem'
 import { tempo as tempoChain, tempoModerato } from 'viem/chains'
 import { Actions, Addresses, Relay } from 'viem/tempo'
 import { microToBase, relayFeeUsd, RelayError, TEMPO_CHAIN_ID, baseToMicro, closeChannel } from '@smartrouter/core'
@@ -57,9 +57,15 @@ export function walletRoutes(ctx: AppContext) {
   const token = ctx.cfg.tokens.payment
   const tokenSymbol = ctx.cfg.network.name === 'tempo' ? 'USDC.e' : 'pathUSD'
   const chain = ctx.cfg.network.name === 'tempo' ? tempoChain : tempoModerato
+  // The fee relay needs Tempo-specific methods (eth_fillTransaction): Tempo's own node first,
+  // then the configured RPC only if it is down. (dRPC answers "method is not available".)
+  const relayRpcs = [...new Set([ctx.cfg.network.nodeRpcUrl, ctx.cfg.network.rpcUrl])]
   const relayClient = createClient({
     chain,
-    transport: http(ctx.cfg.network.rpcUrl, { timeout: 15_000, retryCount: 2 }),
+    transport: fallback(
+      relayRpcs.map((u) => http(u, { timeout: 15_000, retryCount: 2 })),
+      { rank: false, retryCount: 1 },
+    ),
   })
 
   const sponsoredToday = async (userId: string) => {

@@ -24,6 +24,7 @@ import { freeRemaining, freeSpentToday, promptHash, type TaskInput } from '../se
 import { runAndStream, SSE_HEADERS, sseStream, type RunArgs } from '../services/runner.js'
 import { concurrency } from '../middleware/rate-limit.js'
 import { SYSTEM_PROMPT, turnInput, type ChatRow } from '../services/turns.js'
+import { readyUploads } from '../services/uploads.js'
 import { capCheck, usageFor } from '../services/usage.js'
 import { tokenBalance } from '../services/wallet.js'
 
@@ -172,7 +173,10 @@ export function runRoutes(ctx: AppContext) {
   async function buildInput(quote: QuoteRow, chat: ChatRow | undefined, model: CatalogModel, prompt: string): Promise<TaskInput> {
     const complexity = classifyByRules(prompt).complexity
     const maxOutputTokens = quote.maxOutputTokens ?? undefined
-    if (chat) return { ...(await turnInput(ctx, chat, prompt, model, quote.taskType, complexity)), maxOutputTokens }
+    if (chat) {
+      const files = await readyUploads(ctx, quote.userId, quote.attachmentIds ?? [])
+      return { ...(await turnInput(ctx, chat, prompt, model, quote.taskType, complexity, files)), maxOutputTokens }
+    }
     const messages = [
       { role: 'system' as const, content: SYSTEM_PROMPT },
       { role: 'user' as const, content: prompt },
@@ -180,31 +184,25 @@ export function runRoutes(ctx: AppContext) {
     return { taskType: quote.taskType, complexity, prompt, rawPrompt: prompt, messages, contextTokens: estimateTokens(SYSTEM_PROMPT + prompt), maxOutputTokens }
   }
 
-  async function createRequest(args: {
-    user: AuthUser
-    quote: QuoteRow
-    model: CatalogModel
-    chat?: ChatRow
-    prompt: string
-    channelId?: string
-    compareGroup?: string
-    isFree: boolean
-  }) {
+  /** What the user's message shows for the files priced into the quote. */
+  async function fileAttachments(quote: QuoteRow) {
+    if (!quote.attachmentIds?.length) return null
+    const files = await readyUploads(ctx, quote.userId, quote.attachmentIds)
+    return files.map((f) => ({ kind: 'file', ref: f.id, mime: f.mime, name: f.filename, sizeBytes: f.sizeBytes }))
+  }
+
+  async function createRequest(args: { user: AuthUser; quote: QuoteRow; model: CatalogModel; chat?: ChatRow; prompt: string; channelId?: string; compareGroup?: string; isFree: boolean }) {
     const { user, quote, model, chat, prompt } = args
     return ctx.db.transaction(async (tx) => {
       let userMessageId: string | undefined
       let assistantMessageId: string | undefined
       // Compare runs stay out of the chat until the user picks a winner (/compare/vote).
       if (chat && !args.compareGroup) {
-        const [locked] = await tx
-          .select({ n: schema.chats.messageCount, title: schema.chats.title })
-          .from(schema.chats)
-          .where(eq(schema.chats.id, chat.id))
-          .for('update')
+        const [locked] = await tx.select({ n: schema.chats.messageCount, title: schema.chats.title }).from(schema.chats).where(eq(schema.chats.id, chat.id)).for('update')
         const n = locked!.n
         const [um] = await tx
           .insert(schema.messages)
-          .values({ chatId: chat.id, seq: n + 1, role: 'user', content: prompt })
+          .values({ chatId: chat.id, seq: n + 1, role: 'user', content: prompt, attachments: await fileAttachments(quote) })
           .returning({ id: schema.messages.id })
         const [am] = await tx
           .insert(schema.messages)
@@ -248,8 +246,6 @@ export function runRoutes(ctx: AppContext) {
       return req!
     })
   }
-
-
 
   type Slot = { release: () => Promise<void>; handedOff: boolean }
   const runSlots = concurrency(ctx.redis, { max: MAX_CONCURRENT_RUNS, ttlMs: 10 * 60_000 })
@@ -310,8 +306,7 @@ export function runRoutes(ctx: AppContext) {
     const slider = chat?.slider ?? user.slider
 
     const release = await runSlots.acquire(user.id)
-    if (!release)
-      throw new AppError('RATE_LIMITED', `You already have ${MAX_CONCURRENT_RUNS} answers running — wait for one to finish`, { limit: 'concurrent_runs' })
+    if (!release) throw new AppError('RATE_LIMITED', `You already have ${MAX_CONCURRENT_RUNS} answers running — wait for one to finish`, { limit: 'concurrent_runs' })
     const slot: Slot = { release, handedOff: false }
     try {
       // ----- free model -----
