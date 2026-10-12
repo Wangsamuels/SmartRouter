@@ -23,6 +23,7 @@
     "load:test": "tsx scripts/load-test.ts",
     "wallet:test": "tsx scripts/wallet-test.ts",
     "uploads:test": "tsx scripts/uploads-test.ts",
+    "privy-signer:test": "tsx scripts/privy-signer-test.ts",
     "caps:test": "tsx scripts/caps-test.ts"
   },
   "devDependencies": {

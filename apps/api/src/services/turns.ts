@@ -36,14 +36,17 @@ export async function turnInput(
     .orderBy(desc(schema.messages.seq))
     .limit(HISTORY_LIMIT)
   const free = model?.payment === 'free'
+  // One file budget per turn, shared: this message's files first, then earlier files (newest
+  // first). Whatever model picks the chat up next gets the same thread and the same files.
   const fileBudget = free ? ctx.cfg.uploads.attachTokensFree : ctx.cfg.uploads.attachTokensPaid
-  const budget = (free ? ctx.cfg.free.contextTokens : ctx.cfg.chat.contextTokens) + (files.length ? fileBudget : 0)
   const { block, cut } = attachmentBlock(files, fileBudget)
+  const earlier = await withEarlierFiles(ctx, history.reverse(), Math.max(0, fileBudget - (block ? estimateTokens(block) : 0)))
+  const budget = (free ? ctx.cfg.free.contextTokens : ctx.cfg.chat.contextTokens) + (files.length || earlier.hasFiles ? fileBudget : 0)
   const built = buildContext({
     systemPrompt: SYSTEM_PROMPT,
     summary: chat.summary,
     summaryThroughSeq: chat.summaryThroughSeq,
-    history: await withEarlierFiles(ctx, history.reverse(), fileBudget),
+    history: earlier.history,
     prompt: block + prompt,
     budgetTokens: budget,
   })
@@ -52,25 +55,43 @@ export async function turnInput(
 
 type HistoryRow = { seq: number; role: 'user' | 'assistant' | 'system'; content: string; attachments: { kind: string; ref: string; name?: string }[] | null }
 
+/** Below this many tokens left, an earlier file is only named, not included. */
+const MIN_FILE_TOKENS = 200
+
 /**
- * Files attached to earlier messages stay readable in later turns (until they expire). Each is
- * put back in front of its message; buildContext drops old turns when the budget runs out.
+ * Files attached to earlier messages stay readable in later turns (until they expire), whichever
+ * model answers. Each is put back in front of its own message, newest first, sharing `budget`;
+ * a file that no longer fits is named so the model knows it existed.
  */
-async function withEarlierFiles(ctx: AppContext, history: HistoryRow[], fileBudget: number) {
+async function withEarlierFiles(ctx: AppContext, history: HistoryRow[], budget: number): Promise<{ history: HistoryRow[]; hasFiles: boolean }> {
   const ids = [...new Set(history.flatMap((m) => (m.attachments ?? []).filter((a) => a.kind === 'file').map((a) => a.ref)))]
-  if (!ids.length) return history
+  if (!ids.length) return { history, hasFiles: false }
   const rows = await ctx.db
     .select({ id: schema.uploads.id, filename: schema.uploads.filename, text: schema.uploads.text, truncated: schema.uploads.truncated, status: schema.uploads.status })
     .from(schema.uploads)
     .where(inArray(schema.uploads.id, ids))
   const byId = new Map(rows.map((r) => [r.id, r]))
-  return history.map((m) => {
-    const files = (m.attachments ?? []).filter((a) => a.kind === 'file')
-    if (!files.length) return m
-    const live = files.map((a) => byId.get(a.ref)).filter((r) => r && r.status === 'ready' && r.text !== null) as { filename: string; text: string; truncated: boolean }[]
-    const gone = files.filter((a) => !live.some((l) => l.filename === a.name)).map((a) => a.name ?? 'file')
-    const { block } = attachmentBlock(live, fileBudget)
-    const note = gone.length ? `(Attached earlier, no longer available: ${gone.join(', ')})\n\n` : ''
-    return { ...m, content: block + note + m.content }
-  })
+  let left = budget
+  let hasFiles = false
+  const out = [...history]
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i]!
+    const refs = (m.attachments ?? []).filter((a) => a.kind === 'file')
+    if (!refs.length) continue
+    const live = refs.map((a) => byId.get(a.ref)).filter((r) => r && r.status === 'ready' && r.text !== null) as { filename: string; text: string; truncated: boolean }[]
+    const gone = refs.filter((a) => !live.some((l) => l.filename === a.name)).map((a) => a.name ?? 'file')
+    let block = ''
+    let skipped: string[] = []
+    if (live.length && left >= MIN_FILE_TOKENS) {
+      block = attachmentBlock(live, left).block
+      left -= estimateTokens(block)
+      hasFiles = true
+    } else skipped = live.map((l) => l.filename)
+    const notes = [
+      gone.length ? `(Attached earlier, no longer available: ${gone.join(', ')})` : '',
+      skipped.length ? `(Attached earlier: ${skipped.join(', ')} — not repeated here because of length; ask the user to attach it again if you need it)` : '',
+    ].filter(Boolean)
+    out[i] = { ...m, content: block + (notes.length ? notes.join('\n') + '\n\n' : '') + m.content }
+  }
+  return { history: out, hasFiles }
 }

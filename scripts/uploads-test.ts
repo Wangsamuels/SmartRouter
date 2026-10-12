@@ -20,7 +20,11 @@ const fail = (msg: string): never => {
   process.exit(1)
 }
 async function call(method: string, path: string, body?: unknown, allow: number[] = []) {
-  const res = await fetch(API + path, { method, headers: { 'content-type': 'application/json', origin: ORIGIN, ...(session ? { 'x-session-token': session } : {}) }, body: body ? JSON.stringify(body) : undefined })
+  const res = await fetch(API + path, {
+    method,
+    headers: { 'content-type': 'application/json', origin: ORIGIN, ...(session ? { 'x-session-token': session } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  })
   const json: any = await res.json().catch(() => ({}))
   if (!res.ok && !allow.includes(res.status)) throw new Error(`${method} ${path} → ${res.status} ${JSON.stringify(json)}`)
   return { status: res.status, ...json }
@@ -88,16 +92,41 @@ const withFiles = await call('POST', `/chats/${chat.chatId}/quote`, { prompt: 'W
 if (!(withFiles.contextTokens > plain.contextTokens)) fail(`files should add context: ${plain.contextTokens} → ${withFiles.contextTokens}`)
 if (withFiles.attachments?.length !== 2) fail(`quote should list the files: ${JSON.stringify(withFiles)}`)
 ok('quote prices the files in', { without: plain.contextTokens, with: withFiles.contextTokens })
-const run = await fetch(API + '/run', { method: 'POST', headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-session-token': session }, body: JSON.stringify({ quoteId: withFiles.quoteId, prompt: 'What is the codename?' }) })
+const run = await fetch(API + '/run', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-session-token': session },
+  body: JSON.stringify({ quoteId: withFiles.quoteId, prompt: 'What is the codename?' }),
+})
 const text = await run.text()
 if (!text.includes('event: done')) fail(`free run failed: ${text.slice(0, 300)}`)
 const thread = await call('GET', `/chats/${chat.chatId}`)
 const um = thread.messages.find((m: any) => m.role === 'user')
 if (um?.attachments?.map((a: any) => a.name).join(',') !== 'notes.md,report.pdf') fail(`user message should list the files: ${JSON.stringify(um)}`)
-ok('answer ran; the message lists its files', um.attachments.map((a: any) => a.name))
+ok(
+  'answer ran; the message lists its files',
+  um.attachments.map((a: any) => a.name),
+)
 const next = await call('POST', `/chats/${chat.chatId}/quote`, { prompt: 'And the budget?', modelId: free.id })
 if (!(next.contextTokens > plain.contextTokens + 20)) fail(`the next turn should still carry the files: ${next.contextTokens}`)
 ok('next turn still sees the files', { contextTokens: next.contextTokens })
+
+// ---- switching models mid-chat: the next model gets the whole thread and the files ----
+const long = 'Background paragraph about the project and its history. '.repeat(1100) + '\nFINAL NOTE: the vendor is OSPREY-7.'
+const bigFile = await upload('long-brief.txt', 'text/plain', new TextEncoder().encode(long))
+const chat2 = await call('POST', '/chats', { taskType: 'chat', slider: 'cheapest' })
+const q1 = await call('POST', `/chats/${chat2.chatId}/quote`, { prompt: 'Summarise this.', modelId: free.id, attachmentIds: [bigFile.uploadId] })
+const r1 = await fetch(API + '/run', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-session-token': session },
+  body: JSON.stringify({ quoteId: q1.quoteId, prompt: 'Summarise this.' }),
+})
+if (!(await r1.text()).includes('event: done')) fail('free run with a long file failed')
+const paid = (await call('GET', '/catalog?taskType=chat&sort=quality')).models.find((m: any) => !m.free)
+const onPaid = await call('POST', `/chats/${chat2.chatId}/quote`, { prompt: 'Who is the vendor?', modelId: paid.id })
+if (!(onPaid.contextTokens > bigFile.tokens)) fail(`after switching to ${paid.id}, the earlier file should be included in full: ${onPaid.contextTokens} vs file ${bigFile.tokens}`)
+const backToFree = await call('POST', `/chats/${chat2.chatId}/quote`, { prompt: 'Who is the vendor?', modelId: free.id })
+if (!(backToFree.contextTokens < onPaid.contextTokens && backToFree.contextTokens > 2000)) fail(`free model should get the file cut to its budget: ${backToFree.contextTokens}`)
+ok('switching models keeps the thread and the file', { fileTokens: bigFile.tokens, freeFirstTurn: q1.filesCut, paidSees: onPaid.contextTokens, freeSees: backToFree.contextTokens })
 
 // ---- delete ----
 await call('DELETE', `/uploads/${notes.uploadId}`)

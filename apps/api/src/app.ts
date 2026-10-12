@@ -28,8 +28,10 @@ export function createApp(ctx: AppContext) {
       // Credentials (the session cookie) require an explicit origin, never '*'.
       origin: (o) => (ctx.cfg.app.origins.includes(o) ? o : null),
       credentials: true,
-      allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization', 'x-session-token', 'privy-id-token'],
-      exposeHeaders: ['Payment-Receipt', 'WWW-Authenticate', 'x-request-id', 'Retry-After'],
+      // mppx clients add Accept-Payment (and Payment-Session* on reused channels) to paid requests;
+      // without them here the browser blocks /run after the preflight ("Could not reach SmartRouter").
+      allowHeaders: ['content-type', 'authorization', 'x-request-id', 'payment-authorization', 'x-session-token', 'privy-id-token', 'accept-payment', 'payment-session', 'payment-session-snapshot', 'payment-receipt'],
+      exposeHeaders: ['Payment-Receipt', 'Payment-Session', 'Payment-Session-Snapshot', 'WWW-Authenticate', 'x-request-id', 'Retry-After'],
     }),
   )
   // Prompts are capped at 32k chars by validation; 256 KB leaves room for JSON + history ids.
