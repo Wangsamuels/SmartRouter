@@ -59,6 +59,8 @@ await Actions.accessKey.authorizeSync(rootRelay as never, {
   expiry: Math.floor(Date.now() / 1000) + setup.expiryDays * 86_400,
   limits: [{ token: setup.token, limit: BigInt(Math.round(setup.limitUsd * 1e6)), period: setup.periodSeconds }],
   scopes: setup.scopes,
+  // Explicit no-op call: Tempo refuses transactions with no calls, and Privy-backed accounts don't add one.
+  calls: [{ to: '0x0000000000000000000000000000000000000000', data: '0x' }],
   feePayer: true,
 } as never)
 if ((await bal()) !== b0) fail('authorizing the key should cost the user nothing')

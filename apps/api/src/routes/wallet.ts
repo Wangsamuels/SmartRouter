@@ -17,7 +17,8 @@ import type { AppContext } from '../context.js'
 import { requireAuth, type AuthVars } from '../middleware/auth.js'
 import { AppError } from '../middleware/error.js'
 import { openChannel, usageFor } from '../services/usage.js'
-import { APPROVE_SELECTOR, TRANSFER_SELECTOR, TRANSFER_WITH_MEMO_SELECTOR, chainOptions, findOption, micro, relay, tokenBalance, usd, validAddress } from '../services/wallet.js'
+import { consumeSendCode, issueSendCode, linkCodeToMove, maskEmail, type SendTarget } from '../services/send-codes.js'
+import { chainOptions, findOption, micro, relay, tokenBalance, usd, validAddress } from '../services/wallet.js'
 
 /** Tempo's TIP-1034 payment-channel precompile (where mppx deposits go). */
 const ESCROW_PRECOMPILE = '0x4d50500000000000000000000000000000000000'
@@ -35,6 +36,11 @@ const SendBody = z.object({
   token: z.string().min(2).max(10).default('USDC'),
   to: z.string().min(20).max(64),
   amountUsd: z.number().positive().max(1_000_000),
+})
+/** Sending money out needs the 6-digit email code from POST /wallet/send/code. */
+const ConfirmedSendBody = SendBody.extend({
+  verificationId: z.string().uuid(),
+  code: z.string().regex(/^\s*\d{6}\s*$/, 'Enter the 6-digit code'),
 })
 
 const relayErr = (e: unknown): never => {
@@ -112,6 +118,8 @@ export function walletRoutes(ctx: AppContext) {
         crossChain: options.length > 0,
         card: options.some((o) => o.chain === 'base' && o.token === 'USDC'),
         cashOut: false,
+        /** Every send out needs the 6-digit code emailed by POST /wallet/send/code. */
+        sendCode: { required: true, sentTo: user.email ? maskEmail(user.email) : null, ttlMinutes: ctx.cfg.wallet.sendCodeTtlMin },
       },
     })
   })
@@ -311,14 +319,42 @@ export function walletRoutes(ctx: AppContext) {
     })
   })
 
-  app.post('/wallet/send', zValidator('json', SendBody), async (c) => {
+  /** What a send's code is bound to (and a cheap check of the send, without a bridge quote). */
+  async function sendTarget(user: { tempoAddress: string }, body: z.infer<typeof SendBody>): Promise<SendTarget & { chainName: string }> {
+    const amountMicro = micro(body.amountUsd)
+    if (amountMicro > ctx.cfg.wallet.sendMaxMicro) throw new AppError('VALIDATION_FAILED', `Sends are limited to $${usd(ctx.cfg.wallet.sendMaxMicro)} at a time`)
+    if (body.chain === 'tempo') {
+      if (!isAddress(body.to)) throw new AppError('VALIDATION_FAILED', 'Enter a valid Tempo address (0x…)')
+      if (body.to.toLowerCase() === user.tempoAddress.toLowerCase()) throw new AppError('VALIDATION_FAILED', "That's your own address")
+      return { chain: 'tempo', token: tokenSymbol, recipient: body.to, amountMicro, chainName: 'Tempo' }
+    }
+    const opt = await findOption(ctx, body.chain, body.token)
+    if (!opt) throw new AppError('VALIDATION_FAILED', `Sending to ${body.chain} ${body.token} isn't supported`)
+    if (!validAddress(opt.vmType, body.to)) throw new AppError('VALIDATION_FAILED', `Enter a valid ${opt.chainName} address`)
+    return { chain: opt.chain, token: opt.token, recipient: body.to, amountMicro, chainName: opt.chainName }
+  }
+
+  /** Step 1 of a send: email a 6-digit code bound to this amount and recipient. */
+  app.post('/wallet/send/code', zValidator('json', SendBody), async (c) => {
     const user = c.get('user')
-    const body = c.req.valid('json')
-    const p = await plan(user, body)
+    const { chainName, ...target } = await sendTarget(user, c.req.valid('json'))
     const balance = await tokenBalance(ctx, user.tempoAddress as `0x${string}`)
-    if (balance < p.amount) throw new AppError('VALIDATION_FAILED', `Not enough in your main wallet ($${usd(balance).toFixed(2)})`)
+    if (balance < target.amountMicro) throw new AppError('VALIDATION_FAILED', `Not enough in your main wallet ($${usd(balance).toFixed(2)})`)
+    return c.json(await issueSendCode(ctx, user, target, { amountUsd: usd(target.amountMicro), chainName, token: target.token }))
+  })
+
+  /** Step 2: the code checks out → the calls to sign (the fee relay only pays for these exact calls). */
+  app.post('/wallet/send', zValidator('json', ConfirmedSendBody), async (c) => {
+    const user = c.get('user')
+    const { verificationId, code, ...body } = c.req.valid('json')
+    const { chainName: _n, ...target } = await sendTarget(user, body)
+    const balance = await tokenBalance(ctx, user.tempoAddress as `0x${string}`)
+    if (balance < target.amountMicro) throw new AppError('VALIDATION_FAILED', `Not enough in your main wallet ($${usd(balance).toFixed(2)})`)
     if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay)
       throw new AppError('RATE_LIMITED', `You've made ${ctx.cfg.wallet.sponsorTxPerDay} wallet transactions today; try again tomorrow`)
+    // Quote before using the code up, so a bridge hiccup doesn't cost the user their code.
+    const p = await plan(user, body)
+    const codeId = await consumeSendCode(ctx, user.id, verificationId, code, target)
     const [move] = await ctx.db
       .insert(schema.walletMoves)
       .values({
@@ -336,9 +372,12 @@ export function walletRoutes(ctx: AppContext) {
           expectedReceiveMicro: p.receive.toString(),
           bridgeFeeUsd: p.feeUsd,
           submitted: false,
+          verifiedBy: 'email_code',
+          calls: p.calls.map((x) => ({ to: x.to.toLowerCase(), data: x.data.toLowerCase(), value: x.value ?? '0' })),
         },
       })
       .returning()
+    await linkCodeToMove(ctx, codeId, move!.id)
     return c.json({
       sendId: move!.id,
       chainId: ctx.cfg.network.chainId,
@@ -611,16 +650,14 @@ export function walletRoutes(ctx: AppContext) {
       if ((req as { keyAuthorization?: unknown }).keyAuthorization && calls.every(noop)) return (await sponsoredToday(user.id)) < ctx.cfg.wallet.sponsorTxPerDay
       if (!calls.length) return false
       if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay) return 'spend_limit_exceeded'
-      const targets = await allowedTargets(user.id)
+      // Money leaving the wallet: only the exact calls of a send the user confirmed with their
+      // email code (pending, not yet submitted). Anything else isn't sponsored.
+      const confirmed = await confirmedCalls(user.id)
       return calls.every((call) => {
         const to = call.to?.toLowerCase()
         if (!to) return false
         if (to === Addresses.accountKeychain.toLowerCase()) return true // update the key's limit, or revoke it
-        if (to === token.toLowerCase()) {
-          const sel = call.data?.slice(0, 10).toLowerCase()
-          return sel === TRANSFER_SELECTOR || sel === TRANSFER_WITH_MEMO_SELECTOR || sel === APPROVE_SELECTOR
-        }
-        return targets.has(to)
+        return confirmed.has(`${to}:${(call.data ?? '0x').toLowerCase()}`)
       })
     }
     const res = await relayFor.fetch(
@@ -635,20 +672,22 @@ export function walletRoutes(ctx: AppContext) {
     return new Response(text, { status: res.status, headers: { 'content-type': 'application/json' } })
   })
 
-  /** Contracts this user's pending cross-chain sends may call (from Relay's quote). */
-  async function allowedTargets(userId: string) {
+  /** `to:data` of every call in this user's code-confirmed sends that are still waiting to be signed. */
+  async function confirmedCalls(userId: string) {
     const rows = await ctx.db
-      .select({ t: schema.walletMoves.allowedTargets })
+      .select({ d: schema.walletMoves.detail })
       .from(schema.walletMoves)
       .where(
         and(
           eq(schema.walletMoves.userId, userId),
-          eq(schema.walletMoves.kind, 'send_cross_chain'),
-          inArray(schema.walletMoves.status, ['pending']),
-          gte(schema.walletMoves.createdAt, sql`now() - interval '1 hour'`),
+          inArray(schema.walletMoves.kind, ['send', 'send_cross_chain']),
+          eq(schema.walletMoves.status, 'pending'),
+          sql`${schema.walletMoves.txHash} is null`,
+          sql`${schema.walletMoves.detail}->>'verifiedBy' = 'email_code'`,
+          gte(schema.walletMoves.createdAt, sql`now() - interval '30 minutes'`),
         ),
       )
-    return new Set(rows.flatMap((r) => r.t ?? []).map((t) => t.toLowerCase()))
+    return new Set(rows.flatMap((r) => ((r.d?.calls as { to: string; data: string }[] | undefined) ?? []).map((x) => `${x.to}:${x.data}`)))
   }
 
   return app

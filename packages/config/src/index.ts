@@ -65,6 +65,13 @@ const EnvSchema = z.object({
   SPONSOR_TX_PER_DAY: z.coerce.number().int().nonnegative().default(20),
   /** Largest single send a user can make from the app (USD). */
   SEND_MAX_USD: z.coerce.number().positive().default(1000),
+  /** Resend (resend.com) for the 6-digit codes that confirm money leaving a user's wallet. */
+  RESEND_API_KEY: optionalStr,
+  EMAIL_FROM: z.string().default('SmartRouter <onboarding@resend.dev>'),
+  /** Minutes a send code stays valid. */
+  SEND_CODE_TTL_MIN: z.coerce.number().int().positive().default(10),
+  /** Testnet only: return the code in the API response instead of requiring email (automated tests). Ignored on mainnet. */
+  SEND_CODE_ECHO: z.enum(['true', 'false']).default('false'),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: optionalStr,
   SESSION_SECRET: z.string().min(32),
@@ -155,7 +162,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       sweepDustMicro: BigInt(Math.round(e.PROFIT_SWEEP_DUST_USD * 1e6)),
     },
     relay: { apiKey: e.RELAY_API_KEY, url: e.RELAY_API_URL.replace(/\/+$/, '') },
-    wallet: { sponsorTxPerDay: e.SPONSOR_TX_PER_DAY, sendMaxMicro: BigInt(Math.round(e.SEND_MAX_USD * 1e6)) },
+    wallet: {
+      sponsorTxPerDay: e.SPONSOR_TX_PER_DAY,
+      sendMaxMicro: BigInt(Math.round(e.SEND_MAX_USD * 1e6)),
+      sendCodeTtlMin: e.SEND_CODE_TTL_MIN,
+      sendCodeEcho: e.SEND_CODE_ECHO === 'true' && e.TEMPO_NETWORK !== 'tempo',
+    },
+    email: { resendApiKey: e.RESEND_API_KEY, from: e.EMAIL_FROM },
     alerts: {
       hotWalletMinMicro: BigInt(Math.round(e.HOT_WALLET_MIN_USD * 1e6)),
       operatorMinMicro: BigInt(Math.round(e.OPERATOR_MIN_USD * 1e6)),

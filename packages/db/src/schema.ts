@@ -397,6 +397,29 @@ export const walletMoves = pgTable(
   (t) => [index('wallet_moves_user_created_idx').on(t.userId, t.createdAt), index('wallet_moves_status_idx').on(t.status)],
 )
 
+/** 6-digit email codes that confirm money leaving a user's wallet; one per send, bound to its amount and recipient. */
+export const sendCodes = pgTable(
+  'send_codes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** HMAC-SHA256(sessionSecret, id:code) — the code itself is never stored. */
+    codeHash: text('code_hash').notNull(),
+    chain: text('chain').notNull(),
+    token: text('token').notNull(),
+    recipient: text('recipient').notNull(),
+    amountMicro: micro('amount_micro').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    expiresAt: ts('expires_at').notNull(),
+    usedAt: ts('used_at'),
+    moveId: uuid('move_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('send_codes_user_created_idx').on(t.userId, t.createdAt)],
+)
+
 /** Network fees the operator paid for a user's own wallet transactions (the daily cap counts these). */
 export const sponsoredTxs = pgTable(
   'sponsored_txs',
