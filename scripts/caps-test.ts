@@ -71,9 +71,10 @@ ok('spending key authorized (fee paid by SmartRouter) and registered', w1.spendi
 // ---- paid answers signed by the key, automatic deposit sized by the caps ----
 const keyClient = createClient({ chain: tempoModerato, account: key, transport: http(RPC) })
 const fetchAuthed: typeof fetch = (u, i) => fetch(u, { ...i, headers: { ...Object.fromEntries(new Headers(i?.headers)), origin: ORIGIN, 'x-session-token': session } })
-async function answer(manager: ReturnType<typeof sessionManager>) {
-  const chat = await call('POST', '/chats', { taskType: 'chat', slider: 'cheapest' })
-  const q = await call('POST', `/chats/${chat.chatId}/quote`, { prompt: 'Say hi.' })
+let chatId: string | undefined
+async function answer(manager: ReturnType<typeof sessionManager>, modelId?: string) {
+  chatId ??= (await call('POST', '/chats', { taskType: 'chat', slider: 'cheapest' })).chatId
+  const q = await call('POST', `/chats/${chatId}/quote`, { prompt: 'Say hi.', ...(modelId ? { modelId } : {}) })
   const res = await manager.fetch(API + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ quoteId: q.quoteId, prompt: 'Say hi.' }) })
   return { status: res.status, text: await res.text() }
 }
@@ -86,12 +87,21 @@ const w2 = await call('GET', '/wallet')
 if (w2.locked?.depositUsd !== 0.5) fail(`expected $0.50 locked, got ${JSON.stringify(w2.locked)}`)
 ok('paid answer signed by the spending key; $0.50 locked automatically', { locked: w2.locked, daily: w2.caps.daily })
 
-// ---- daily cap: drop it below what's spent, the next answer is refused ----
-await call('PATCH', '/me/settings', { dailyLimitUsd: 0.001 })
-const a2 = await answer(manager).catch((e) => ({ status: 0, text: String(e) }))
-if (!/daily_limit/.test(a2.text)) fail(`expected daily_limit refusal, got ${a2.status} ${a2.text.slice(0, 200)}`)
-ok('daily cap refuses the next paid answer')
-await call('PATCH', '/me/settings', { dailyLimitUsd: 0.5 })
+// ---- daily cap: lowest allowed is $0.10; keep answering until it refuses (testnet prices are tiny) ----
+const tooLow = await call('PATCH', '/me/settings', { dailyLimitUsd: 0.05 }, [400])
+if (tooLow.status !== 400) fail('a $0.05 daily cap should be refused (minimum $0.10)')
+await call('PATCH', '/me/settings', { dailyLimitUsd: 0.1, weeklyLimitUsd: 0.3 })
+const priciest = (await call('GET', '/catalog?taskType=chat&sort=price_desc')).models.find((m: any) => !m.free).id
+let refused = false
+for (let i = 0; i < 80 && !refused; i++) {
+  const a = await answer(manager, priciest).catch((e) => ({ status: 0, text: String(e) }))
+  if (process.env.DEBUG) console.log('   answer', i, a.text.match(/"priceUsd":[0-9.]+/)?.[0], (await call('GET', '/me')).usage.daily.spentUsd)
+  if (/daily_limit/.test(a.text)) refused = true
+  else if (!a.text.includes('event: done')) fail(`paid answer failed before the cap: ${a.text.slice(0, 200)}`)
+}
+if (!refused) fail('the $0.10 daily cap never refused an answer')
+ok('$0.10/day and $0.30/week accepted; the daily cap refuses the answer that would pass it')
+await call('PATCH', '/me/settings', { weeklyLimitUsd: 2, dailyLimitUsd: 0.5 })
 
 // ---- on-chain limit: a deposit beyond the key's daily limit is refused by Tempo ----
 const b1 = await bal()

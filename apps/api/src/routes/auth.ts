@@ -17,6 +17,9 @@ import { usageFor } from '../services/usage.js'
 const NONCE_TTL_MS = 10 * 60_000
 const Address = z.string().regex(/^0x[0-9a-fA-F]{40}$/)
 
+/** Smallest spending caps a user can set. */
+export const CAP_MIN = { dailyUsd: 0.1, weeklyUsd: 0.3 } as const
+
 export function authRoutes(ctx: AppContext) {
   const app = new Hono<AuthVars>()
 
@@ -133,6 +136,8 @@ export function authRoutes(ctx: AppContext) {
       country: u.country,
       usage: await usageFor(ctx, u),
       settings: { slider: u.slider, dailyLimitUsd: Number(u.dailyLimitMicro) / 1e6, weeklyLimitUsd: Number(u.weeklyLimitMicro) / 1e6, autoFreeFallback: u.autoFreeFallback },
+      /** Lowest caps the settings form should accept. */
+      capLimits: { dailyMinUsd: CAP_MIN.dailyUsd, weeklyMinUsd: CAP_MIN.weeklyUsd, maxUsd: 1_000 },
       allocation: session
         ? { channelId: session.channelId, depositUsd: Number(session.depositMicro) / 1e6, usedUsd: Number(used) / 1e6, remainingUsd: Number(session.depositMicro - used) / 1e6 }
         : null,
@@ -147,8 +152,8 @@ export function authRoutes(ctx: AppContext) {
       z.object({
         slider: z.enum(['cheapest', 'balanced', 'best']).optional(),
         allocationUsd: z.number().min(0.5).max(100).optional(),
-        weeklyLimitUsd: z.number().min(0).max(1_000).optional(),
-        dailyLimitUsd: z.number().min(0).max(1_000).optional(),
+        weeklyLimitUsd: z.number().min(CAP_MIN.weeklyUsd, `The weekly cap can be as low as $${CAP_MIN.weeklyUsd}`).max(1_000).optional(),
+        dailyLimitUsd: z.number().min(CAP_MIN.dailyUsd, `The daily cap can be as low as $${CAP_MIN.dailyUsd}`).max(1_000).optional(),
         autoFreeFallback: z.boolean().optional(),
         country: z.string().length(2).optional(),
       }),

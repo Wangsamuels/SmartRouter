@@ -528,11 +528,17 @@ export function walletRoutes(ctx: AppContext) {
   app.post('/wallet/locked/return', async (c) => {
     const user = c.get('user')
     if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Paid runs are not configured')
-    const rows = await ctx.db.select().from(schema.userSessions).where(and(eq(schema.userSessions.userId, user.id), eq(schema.userSessions.status, 'open')))
+    const rows = await ctx.db
+      .select()
+      .from(schema.userSessions)
+      .where(and(eq(schema.userSessions.userId, user.id), eq(schema.userSessions.status, 'open')))
     let returned = 0n
     const skipped: string[] = []
     for (const r of rows) {
-      const busy = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(schema.requests).where(and(eq(schema.requests.channelId, r.channelId), sql`${schema.requests.status} in ('pending','running')`))
+      const busy = await ctx.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(schema.requests)
+        .where(and(eq(schema.requests.channelId, r.channelId), sql`${schema.requests.status} in ('pending','running')`))
       if (busy[0]?.n) {
         skipped.push(`${r.channelId}: an answer is still running`)
         continue
@@ -548,7 +554,8 @@ export function walletRoutes(ctx: AppContext) {
     const user = c.get('user')
     const body = (await c.req.json().catch(() => null)) as { method?: string; id?: unknown; jsonrpc?: string } | unknown[] | null
     if (!body || Array.isArray(body) || typeof body.method !== 'string') throw new AppError('VALIDATION_FAILED', 'Send one JSON-RPC request')
-    if (!RELAY_METHODS.has(body.method))
+    if (!RELAY_METHODS.has(body.method)) {
+      console.warn(`[relay] user=${user.id} refused method ${body.method}`)
       return c.json({
         jsonrpc: '2.0',
         id: body.id ?? null,
@@ -557,6 +564,7 @@ export function walletRoutes(ctx: AppContext) {
           message: `${body.method} is not available on this relay`,
         },
       })
+    }
     if (!ctx.sessions) throw new AppError('PROVIDER_UNAVAILABLE', 'Fee sponsorship is not configured')
 
     const userAddr = user.tempoAddress.toLowerCase()
@@ -568,32 +576,12 @@ export function walletRoutes(ctx: AppContext) {
           feeToken: token,
           name: 'SmartRouter',
           validate: async (req) => {
-            const r = req as {
-              from?: string
-              calls?: { to?: string; data?: string }[]
-              to?: string
-              data?: string
-            }
-            if (r.from?.toLowerCase() !== userAddr) return false
-            const calls = r.calls?.length ? r.calls : r.to ? [{ to: r.to, data: r.data }] : []
-            // Authorizing the spending key: a transaction that carries a key authorization and only an
-            // empty call (viem sends one to the zero address).
-            const noop = (x: { to?: string; data?: string }) => /^0x0{40}$/i.test(x.to ?? '') && (!x.data || x.data === '0x')
-            if ((req as { keyAuthorization?: unknown }).keyAuthorization && calls.every(noop))
-              return (await sponsoredToday(user.id)) < ctx.cfg.wallet.sponsorTxPerDay
-            if (!calls.length) return false
-            if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay) return 'spend_limit_exceeded'
-            const targets = await allowedTargets(user.id)
-            return calls.every((call) => {
-              const to = call.to?.toLowerCase()
-              if (!to) return false
-              if (to === Addresses.accountKeychain.toLowerCase()) return true // update the key's limit, or revoke it
-              if (to === token.toLowerCase()) {
-                const sel = call.data?.slice(0, 10).toLowerCase()
-                return sel === TRANSFER_SELECTOR || sel === TRANSFER_WITH_MEMO_SELECTOR || sel === APPROVE_SELECTOR
-              }
-              return targets.has(to)
-            })
+            const verdict = await decide(req)
+            const r0 = req as { from?: string; calls?: { to?: string; data?: string }[]; keyAuthorization?: unknown }
+            console.log(
+              `[relay] user=${user.id} method=${body.method} from=${r0.from} keyAuth=${Boolean(r0.keyAuthorization)} calls=${(r0.calls ?? []).map((x) => `${x.to}:${x.data?.slice(0, 10)}`).join(',')} → ${verdict}`,
+            )
+            return verdict
           },
           onSponsored: async (e) => {
             await ctx.db
@@ -608,13 +596,43 @@ export function walletRoutes(ctx: AppContext) {
         }),
       ],
     })
-    return relayFor.fetch(
+    async function decide(req: unknown): Promise<boolean | 'spend_limit_exceeded'> {
+      const r = req as {
+        from?: string
+        calls?: { to?: string; data?: string }[]
+        to?: string
+        data?: string
+      }
+      if (r.from?.toLowerCase() !== userAddr) return false
+      const calls = r.calls?.length ? r.calls : r.to ? [{ to: r.to, data: r.data }] : []
+      // Authorizing the spending key: a transaction that carries a key authorization and only an
+      // empty call (viem sends one to the zero address).
+      const noop = (x: { to?: string; data?: string }) => /^0x0{40}$/i.test(x.to ?? '') && (!x.data || x.data === '0x')
+      if ((req as { keyAuthorization?: unknown }).keyAuthorization && calls.every(noop)) return (await sponsoredToday(user.id)) < ctx.cfg.wallet.sponsorTxPerDay
+      if (!calls.length) return false
+      if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay) return 'spend_limit_exceeded'
+      const targets = await allowedTargets(user.id)
+      return calls.every((call) => {
+        const to = call.to?.toLowerCase()
+        if (!to) return false
+        if (to === Addresses.accountKeychain.toLowerCase()) return true // update the key's limit, or revoke it
+        if (to === token.toLowerCase()) {
+          const sel = call.data?.slice(0, 10).toLowerCase()
+          return sel === TRANSFER_SELECTOR || sel === TRANSFER_WITH_MEMO_SELECTOR || sel === APPROVE_SELECTOR
+        }
+        return targets.has(to)
+      })
+    }
+    const res = await relayFor.fetch(
       new Request('http://relay/', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       }),
     )
+    const text = await res.text()
+    if (text.includes('"error"')) console.warn(`[relay] user=${user.id} method=${body.method} error ${text.slice(0, 300)}`)
+    return new Response(text, { status: res.status, headers: { 'content-type': 'application/json' } })
   })
 
   /** Contracts this user's pending cross-chain sends may call (from Relay's quote). */
