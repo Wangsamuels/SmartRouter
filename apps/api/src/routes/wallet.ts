@@ -37,10 +37,13 @@ const SendBody = z.object({
   to: z.string().min(20).max(64),
   amountUsd: z.number().positive().max(1_000_000),
 })
-/** Sending money out needs the 6-digit email code from POST /wallet/send/code. */
+/** With SEND_CODE_REQUIRED=true, sending money out also needs the 6-digit email code from POST /wallet/send/code. */
 const ConfirmedSendBody = SendBody.extend({
-  verificationId: z.string().uuid(),
-  code: z.string().regex(/^\s*\d{6}\s*$/, 'Enter the 6-digit code'),
+  verificationId: z.string().uuid().optional(),
+  code: z
+    .string()
+    .regex(/^\s*\d{6}\s*$/, 'Enter the 6-digit code')
+    .optional(),
 })
 
 const relayErr = (e: unknown): never => {
@@ -125,7 +128,7 @@ export function walletRoutes(ctx: AppContext) {
         card: options.some((o) => o.chain === 'base' && o.token === 'USDC'),
         cashOut: false,
         /** Every send out needs the 6-digit code emailed by POST /wallet/send/code. */
-        sendCode: { required: true, sentTo: user.email ? maskEmail(user.email) : null, ttlMinutes: ctx.cfg.wallet.sendCodeTtlMin },
+        sendCode: { required: ctx.cfg.wallet.sendCodeRequired, sentTo: user.email ? maskEmail(user.email) : null, ttlMinutes: ctx.cfg.wallet.sendCodeTtlMin },
       },
     })
   })
@@ -349,7 +352,7 @@ export function walletRoutes(ctx: AppContext) {
     return c.json(await issueSendCode(ctx, user, target, { amountUsd: usd(target.amountMicro), chainName, token: target.token }))
   })
 
-  /** Step 2: the code checks out → the calls to sign (the fee relay only pays for these exact calls). */
+  /** The calls to sign for a send (the fee relay only pays for these exact calls). Needs the email code only when SEND_CODE_REQUIRED=true. */
   app.post('/wallet/send', zValidator('json', ConfirmedSendBody), async (c) => {
     const user = c.get('user')
     const { verificationId, code, ...body } = c.req.valid('json')
@@ -360,7 +363,11 @@ export function walletRoutes(ctx: AppContext) {
       throw new AppError('RATE_LIMITED', `You've made ${ctx.cfg.wallet.sponsorTxPerDay} wallet transactions today; try again tomorrow`)
     // Quote before using the code up, so a bridge hiccup doesn't cost the user their code.
     const p = await plan(user, body)
-    const codeId = await consumeSendCode(ctx, user.id, verificationId, code, target)
+    let codeId: string | undefined
+    if (ctx.cfg.wallet.sendCodeRequired) {
+      if (!verificationId || !code) throw new AppError('VALIDATION_FAILED', 'Enter the 6-digit code we emailed you')
+      codeId = await consumeSendCode(ctx, user.id, verificationId, code, target)
+    }
     const [move] = await ctx.db
       .insert(schema.walletMoves)
       .values({
@@ -378,12 +385,12 @@ export function walletRoutes(ctx: AppContext) {
           expectedReceiveMicro: p.receive.toString(),
           bridgeFeeUsd: p.feeUsd,
           submitted: false,
-          verifiedBy: 'email_code',
+          verifiedBy: codeId ? 'email_code' : 'app',
           calls: p.calls.map((x) => ({ to: x.to.toLowerCase(), data: x.data.toLowerCase(), value: x.value ?? '0' })),
         },
       })
       .returning()
-    await linkCodeToMove(ctx, codeId, move!.id)
+    if (codeId) await linkCodeToMove(ctx, codeId, move!.id)
     return c.json({
       sendId: move!.id,
       chainId: ctx.cfg.network.chainId,
@@ -656,8 +663,8 @@ export function walletRoutes(ctx: AppContext) {
       if ((req as { keyAuthorization?: unknown }).keyAuthorization && calls.every(noop)) return (await sponsoredToday(user.id)) < ctx.cfg.wallet.sponsorTxPerDay
       if (!calls.length) return false
       if ((await sponsoredToday(user.id)) >= ctx.cfg.wallet.sponsorTxPerDay) return 'spend_limit_exceeded'
-      // Money leaving the wallet: only the exact calls of a send the user confirmed with their
-      // email code (pending, not yet submitted). Anything else isn't sponsored.
+      // Money leaving the wallet: only the exact calls of a send the app prepared through
+      // POST /wallet/send (pending, not yet submitted). Anything else isn't sponsored.
       const confirmed = await confirmedCalls(user.id)
       return calls.every((call) => {
         const to = call.to?.toLowerCase()
@@ -678,7 +685,7 @@ export function walletRoutes(ctx: AppContext) {
     return new Response(text, { status: res.status, headers: { 'content-type': 'application/json' } })
   })
 
-  /** `to:data` of every call in this user's code-confirmed sends that are still waiting to be signed. */
+  /** `to:data` of every call in this user's app-prepared sends that are still waiting to be signed. */
   async function confirmedCalls(userId: string) {
     const rows = await ctx.db
       .select({ d: schema.walletMoves.detail })
@@ -689,7 +696,7 @@ export function walletRoutes(ctx: AppContext) {
           inArray(schema.walletMoves.kind, ['send', 'send_cross_chain']),
           eq(schema.walletMoves.status, 'pending'),
           sql`${schema.walletMoves.txHash} is null`,
-          sql`${schema.walletMoves.detail}->>'verifiedBy' = 'email_code'`,
+          sql`${schema.walletMoves.detail}->>'verifiedBy' in ('email_code', 'app')`,
           gte(schema.walletMoves.createdAt, sql`now() - interval '30 minutes'`),
         ),
       )

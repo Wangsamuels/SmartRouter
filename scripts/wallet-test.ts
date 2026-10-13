@@ -27,7 +27,11 @@ const fail = (msg: string): never => {
   process.exit(1)
 }
 async function call(method: string, path: string, body?: unknown, allow: number[] = []) {
-  const res = await fetch(API + path, { method, headers: { 'content-type': 'application/json', origin: ORIGIN, ...(session ? { 'x-session-token': session } : {}) }, body: body ? JSON.stringify(body) : undefined })
+  const res = await fetch(API + path, {
+    method,
+    headers: { 'content-type': 'application/json', origin: ORIGIN, ...(session ? { 'x-session-token': session } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  })
   const json: any = await res.json().catch(() => ({}))
   if (!res.ok && !allow.includes(res.status)) throw new Error(`${method} ${path} → ${res.status} ${JSON.stringify(json)}`)
   return allow.length ? { status: res.status, ...json } : json
@@ -59,26 +63,32 @@ const relayClient = createClient({
 const to = privateKeyToAccount(generatePrivateKey()).address
 const q = await call('POST', '/wallet/send/quote', { chain: 'tempo', to, amountUsd: 0.05 })
 ok('send quote', q)
-// Without the email code there's nothing to sign; the code is bound to amount + recipient.
-const noCode = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05 }, [400])
-if (noCode.status !== 400) fail('a send without a code should be refused')
-const vc = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 })
-if (!vc.devCode) fail('testnet API needs SEND_CODE_ECHO=true for this test')
-const wrongCode = String((Number(vc.devCode) + 1) % 1_000_000).padStart(6, '0')
-const bad = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc.verificationId, code: wrongCode }, [400])
-if (bad.code !== 'SEND_CODE_INVALID' || bad.details?.attemptsLeft !== 4) fail(`wrong code: ${JSON.stringify(bad)}`)
-const other = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.06, verificationId: vc.verificationId, code: vc.devCode }, [410])
-if (other.code !== 'SEND_CODE_EXPIRED') fail(`a code for $0.05 must not confirm $0.06: ${JSON.stringify(other)}`)
-const vc2 = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 }, [429])
-if (vc2.status !== 429) fail('a second code within 30 s should be rate limited')
-await new Promise((r) => setTimeout(r, 31_000))
-const vc3 = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 })
-const stale = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc.verificationId, code: vc.devCode }, [410])
-if (stale.code !== 'SEND_CODE_EXPIRED') fail('an older code should stop working once a new one is sent')
-ok('send code: required, wrong code counted, bound to amount, rate limited, only the newest works')
-const send = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc3.verificationId, code: vc3.devCode })
-const reuse = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc3.verificationId, code: vc3.devCode }, [410])
-if (reuse.code !== 'SEND_CODE_EXPIRED') fail('a used code must not work twice')
+let send: any
+if (!w0.features.sendCode?.required) {
+  send = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05 })
+  ok('send prepared without an email code (SEND_CODE_REQUIRED is off)')
+} else {
+  // Without the email code there's nothing to sign; the code is bound to amount + recipient.
+  const noCode = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05 }, [400])
+  if (noCode.status !== 400) fail('a send without a code should be refused')
+  const vc = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 })
+  if (!vc.devCode) fail('testnet API needs SEND_CODE_ECHO=true for this test')
+  const wrongCode = String((Number(vc.devCode) + 1) % 1_000_000).padStart(6, '0')
+  const bad = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc.verificationId, code: wrongCode }, [400])
+  if (bad.code !== 'SEND_CODE_INVALID' || bad.details?.attemptsLeft !== 4) fail(`wrong code: ${JSON.stringify(bad)}`)
+  const other = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.06, verificationId: vc.verificationId, code: vc.devCode }, [410])
+  if (other.code !== 'SEND_CODE_EXPIRED') fail(`a code for $0.05 must not confirm $0.06: ${JSON.stringify(other)}`)
+  const vc2 = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 }, [429])
+  if (vc2.status !== 429) fail('a second code within 30 s should be rate limited')
+  await new Promise((r) => setTimeout(r, 31_000))
+  const vc3 = await call('POST', '/wallet/send/code', { chain: 'tempo', to, amountUsd: 0.05 })
+  const stale = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc.verificationId, code: vc.devCode }, [410])
+  if (stale.code !== 'SEND_CODE_EXPIRED') fail('an older code should stop working once a new one is sent')
+  ok('send code: required, wrong code counted, bound to amount, rate limited, only the newest works')
+  send = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc3.verificationId, code: vc3.devCode })
+  const reuse = await call('POST', '/wallet/send', { chain: 'tempo', to, amountUsd: 0.05, verificationId: vc3.verificationId, code: vc3.devCode }, [410])
+  if (reuse.code !== 'SEND_CODE_EXPIRED') fail('a used code must not work twice')
+}
 const operator = (await call('GET', '/sessions/current')).network.operator as `0x${string}`
 const [u0, o0] = [await bal(user.address), await bal(operator)]
 const rcpt = await sendTransactionSync(relayClient as never, { calls: send.calls, feePayer: true } as never)
@@ -97,13 +107,21 @@ const rogue = privateKeyToAccount(generatePrivateKey()).address
 await sendTransactionSync(relayClient as never, { calls: [{ to: rogue, data: '0x' }], feePayer: true } as never).catch(() => undefined)
 // A plain transfer that skipped the email code isn't sponsored either.
 const unconfirmed = { to: TOKEN, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [rogue, 10_000n] }) }
-const sponsoredUnconfirmed = await sendTransactionSync(relayClient as never, { calls: [unconfirmed], feePayer: true } as never).then(() => true, () => false)
+const sponsoredUnconfirmed = await sendTransactionSync(relayClient as never, { calls: [unconfirmed], feePayer: true } as never).then(
+  () => true,
+  () => false,
+)
 const [u3, o3] = [await bal(user.address), await bal(operator)]
 if (o3 !== o2) fail('operator paid for a call outside the allowlist / an unconfirmed transfer')
 ok('unconfirmed transfer and calls outside the allowlist not sponsored', { userPaidFee: Number(u2 - u3) / 1e6, unconfirmedWentThrough: sponsoredUnconfirmed })
 
 // ---- AI balance: open with a paid run, then close ----
-const manager = sessionManager({ account: user, client: createClient({ chain: tempoModerato, account: user, transport: http(RPC) }) as never, maxDeposit: '0.5', fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), origin: ORIGIN, 'x-session-token': session } }) })
+const manager = sessionManager({
+  account: user,
+  client: createClient({ chain: tempoModerato, account: user, transport: http(RPC) }) as never,
+  maxDeposit: '0.5',
+  fetch: (url, init) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), origin: ORIGIN, 'x-session-token': session } }),
+})
 const chat = await call('POST', '/chats', { taskType: 'chat', slider: 'cheapest' })
 const quote = await call('POST', `/chats/${chat.chatId}/quote`, { prompt: 'Say hi in five words.' })
 const run = await manager.fetch(API + '/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ quoteId: quote.quoteId, prompt: 'Say hi in five words.' }) })
